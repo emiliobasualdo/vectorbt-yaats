@@ -10,6 +10,7 @@ from numba import njit
 from vectorbt.utils.decorators import custom_method
 
 from utils import file_to_data_frame
+import argparse
 
 root = logging.getLogger()
 root.setLevel(logging.INFO)
@@ -22,14 +23,18 @@ root.addHandler(handler)
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Simulate your stuff')
+    parser.add_argument('ohlc_file_path', type=str)
+    args = parser.parse_args()
+
     start_time = datetime.now()
     RESULTS_FILE_PREFIX = f"./results/{start_time.strftime('%Y-%m-%d_%H:%M:%S')}"
     if not os.path.exists(RESULTS_FILE_PREFIX):
         os.makedirs(RESULTS_FILE_PREFIX)
 
-    filename = "/Users/pilo/development/itba/pf/Binance_Minute_OHLC_CSVs/shorts/Binance_ADAUSDT_minute_3000.csv"
-    logging.info(f"Reading file {filename}")
-    (s_name, data) = file_to_data_frame(filename)
+    ohlc_file_path = args.ohlc_file_path
+    logging.info(f"Reading file {ohlc_file_path}")
+    (s_name, data) = file_to_data_frame(ohlc_file_path)
     price = data["Close"]
 
     split_kwargs = dict(
