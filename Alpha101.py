@@ -12,27 +12,35 @@ from vectorbt.utils.decorators import custom_method
 from utils import file_to_data_frame
 import argparse
 
-root = logging.getLogger()
-root.setLevel(logging.INFO)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 handler = logging.StreamHandler(sys.stdout)
 handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(message)s')
 handler.setFormatter(formatter)
-root.addHandler(handler)
+logger.addHandler(handler)
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Simulate your stuff')
-    parser.add_argument('ohlc_file_path', type=str)
-    args = parser.parse_args()
-
     start_time = datetime.now()
     RESULTS_FILE_PREFIX = f"./results/{start_time.strftime('%Y-%m-%d_%H:%M:%S')}"
     if not os.path.exists(RESULTS_FILE_PREFIX):
         os.makedirs(RESULTS_FILE_PREFIX)
 
+    parser = argparse.ArgumentParser(description='Simulate your stuff')
+    parser.add_argument('-o', '--ohlc_file_path', type=str)
+    parser.add_argument('-l', '--log_to_file', action="store_true")
+    args = parser.parse_args()
     ohlc_file_path = args.ohlc_file_path
+    log_to_file = args.ohlc_file_path
+
+    if log_to_file:
+        fh = logging.FileHandler(f"{RESULTS_FILE_PREFIX}/logs.log")
+        formatter = logging.Formatter('%(asctime)s - %(message)s')
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+
     logging.info(f"Reading file {ohlc_file_path}")
     (s_name, data) = file_to_data_frame(ohlc_file_path)
     price = data["Close"]
