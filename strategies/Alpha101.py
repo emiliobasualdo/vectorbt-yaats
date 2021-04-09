@@ -10,20 +10,24 @@ import vectorbt as vbt
 
 # leemos el csv
 (s_name, ohlcv) = file_to_data_frame(
-    "/Users/pilo/development/itba/pf/Binance_Minute_OHLC_CSVs/shorts/Binance_ADAUSDT_minute_3000.csv")
+    "/Users/pilo/development/itba/pf/Binance_Minute_OHLC_CSVs/longs/Binance_ADAUSDT_minute.csv")
 # agarramos solo las columnas que necesitamos
 cols = ohlcv.columns
 print(cols)
-ohlcv.get(["Open", "High", "Low", "Close", "Volume"]).vbt.ohlcv.plot().show_png()
+#ohlcv.get(["Open", "High", "Low", "Close", "Volume"]).vbt.ohlcv.plot().show_png()
 ohlc = ohlcv.get(["Open", "High", "Low", "Close"])
 print(ohlc.head())
 
 #%%
 
 # creamos las ventanas
-figure, windows = create_windows(ohlc=ohlc, n=5, window_len=0.6, training_set_len=0.4)
-(in_df, in_indexes), (out_df, out_indexes) = windows
+figure, windows = create_windows(ohlc=ohlc, n=8, window_len=0.6, training_set_len=0.4)
+(in_df, in_df_index), (out_df, _) = windows
 figure.show()
+
+#%%
+
+in_df.head()
 
 #%%
 
@@ -37,7 +41,7 @@ portfolio_kwargs = dict(
 
 # creamos el indicador
 @njit
-def apply_func_nb(open: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, buy_threshold: float,
+def apply_alpha_nb(open: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, buy_threshold: float,
                   sell_threshold: float):
     aux = (close - open) / (high - low + 0.001)
     aux = np.where(aux >= buy_threshold, 1, aux)
@@ -48,7 +52,7 @@ AlphaInd = vbt.IndicatorFactory(
     input_names=['open', 'high', 'low', 'close'],
     param_names=['buy_threshold', 'sell_threshold'],
     output_names=['signal']
-).from_apply_func(apply_func_nb)
+).from_apply_func(apply_alpha_nb)
 # dir(AlphaInd)
 
 #%%
@@ -71,8 +75,8 @@ def simulate_all_params(ohlc_windows, params_range):
 
 #%%
 
-# Optimizamos par el in y el out
-params_range = np.linspace(0.1, 1, 9, endpoint=False)
+# Optimizamos para el in y el out
+params_range = np.linspace(0.1, 1, 90, endpoint=False)
 in_elr = simulate_all_params(in_df, params_range).expected_log_returns()
 out_elr = simulate_all_params(out_df, params_range).expected_log_returns()
 
@@ -106,10 +110,6 @@ pd.DataFrame(in_best_threshold_pairs, columns=['buy_threshold', 'sell_threshold'
 
 #%%
 
-in_df.head()
-
-#%%
-
 # Corremos el out con los mejores parámetros de in
 #close, high, low, open = list(map(lambda tu: tu[1], in_df.groupby(level=1, axis=1)))
 open = in_df.xs("Open", level=1, axis=1)
@@ -128,7 +128,8 @@ entry_signal.loc[entry_signal[in_best_buy_thresholds[0], in_best_sell_thresholds
 #%%
 
 trade_price = close
-out_test_elr = ExtendedPortfolio.from_signals(trade_price, entry_signal, exit_signal, **portfolio_kwargs).expected_log_returns()
+out_test_port = ExtendedPortfolio.from_signals(trade_price, entry_signal, exit_signal, **portfolio_kwargs)
+out_test_elr = out_test_port.expected_log_returns()
 print(out_test_elr)
 
 #%%
@@ -164,4 +165,10 @@ cv_results_df.vbt.plot(
         dict(line_color=vbt.settings.color_schema['orange'], line_dash='dot')
     ]
 ).show()
+
+#%%
+
+for col in in_best_index:
+    out_test_port.trades.plot(column=col).show()
+out_test_port.trades.plot_pnl(column=col).show()
 
