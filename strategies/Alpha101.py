@@ -1,4 +1,5 @@
 #%%
+from datetime import datetime
 
 from numba import njit
 import numpy as np
@@ -10,7 +11,7 @@ import vectorbt as vbt
 
 # leemos el csv
 (s_name, ohlcv) = file_to_data_frame(
-    "/Users/pilo/development/itba/pf/Binance_Minute_OHLC_CSVs/longs/Binance_ADAUSDT_minute.csv")
+    "/Users/pilo/development/itba/pf/Binance_Minute_OHLC_CSVs/shorts/Binance_ADAUSDT_minute_3000.csv")
 # agarramos solo las columnas que necesitamos
 cols = ohlcv.columns
 print(cols)
@@ -23,7 +24,7 @@ print(ohlc.head())
 # creamos las ventanas
 figure, windows = create_windows(ohlc=ohlc, n=8, window_len=0.6, training_set_len=0.4)
 (in_df, in_df_index), (out_df, _) = windows
-figure.show()
+#figure.show()
 
 #%%
 
@@ -78,7 +79,7 @@ def simulate_all_params(ohlc_windows, params_range):
 # Optimizamos para el in y el out
 params_range = np.linspace(0.1, 1, 90, endpoint=False)
 in_elr = simulate_all_params(in_df, params_range).expected_log_returns()
-out_elr = simulate_all_params(out_df, params_range).expected_log_returns()
+#out_elr = simulate_all_params(out_df, params_range).expected_log_returns()
 
 #%%
 
@@ -106,7 +107,7 @@ print(in_best_threshold_pairs)
 
 #%%
 
-pd.DataFrame(in_best_threshold_pairs, columns=['buy_threshold', 'sell_threshold']).vbt.plot().show()
+#pd.DataFrame(in_best_threshold_pairs, columns=['buy_threshold', 'sell_threshold']).vbt.plot().show()
 
 #%%
 
@@ -119,7 +120,7 @@ close = in_df.xs("Close", level=1, axis=1)
 momentum = AlphaInd.run(open=open, high=high, low=low, close=close,
                         buy_threshold=in_best_buy_thresholds, sell_threshold=in_best_sell_thresholds,
                         short_name="alpha", per_column=True)
-ones = np.full(momentum.signal.shape, 1)
+ones = np.full(momentum.signal.shape[-1], 1)
 entry_signal = momentum.signal_equal(ones, crossover=True)
 exit_signal = momentum.signal_equal(-ones, crossover=True)
 # imprimo para confirmar que haya algún true
@@ -148,27 +149,27 @@ print(in_hold_elr, out_hold_elr)
 
 cv_results_df = pd.DataFrame({
     'in_sample_hold': in_hold_elr.values,
-    'in_sample_median': in_elr.groupby('split_idx').median().values,
+    #'in_sample_median': in_elr.groupby('split_idx').median().values,
     'in_sample_best': in_elr[in_best_index].values,
     'out_sample_hold': out_hold_elr.values,
-    'out_sample_median': out_elr.groupby('split_idx').median().values,
+    #'out_sample_median': out_elr.groupby('split_idx').median().values,
     'out_sample_test': out_test_elr.values
-})
-
-cv_results_df.vbt.plot(
-    trace_kwargs=[
-        dict(line_color=vbt.settings.color_schema['blue']),
-        dict(line_color=vbt.settings.color_schema['blue'], line_dash='dash'),
-        dict(line_color=vbt.settings.color_schema['blue'], line_dash='dot'),
-        dict(line_color=vbt.settings.color_schema['orange']),
-        dict(line_color=vbt.settings.color_schema['orange'], line_dash='dash'),
-        dict(line_color=vbt.settings.color_schema['orange'], line_dash='dot')
-    ]
-).show()
+}).to_csv(f"./result-{datetime.now()}.csv")
+#
+# cv_results_df.vbt.plot(
+#     trace_kwargs=[
+#         dict(line_color=vbt.settings.color_schema['blue']),
+#         dict(line_color=vbt.settings.color_schema['blue'], line_dash='dash'),
+#         dict(line_color=vbt.settings.color_schema['blue'], line_dash='dot'),
+#         dict(line_color=vbt.settings.color_schema['orange']),
+#         dict(line_color=vbt.settings.color_schema['orange'], line_dash='dash'),
+#         dict(line_color=vbt.settings.color_schema['orange'], line_dash='dot')
+#     ]
+# ).show()
 
 #%%
 
-for col in in_best_index:
-    out_test_port.trades.plot(column=col).show()
-out_test_port.trades.plot_pnl(column=col).show()
+# for col in in_best_index:
+#     out_test_port.trades.plot(column=col).show()
+# out_test_port.trades.plot_pnl(column=col).show()
 
