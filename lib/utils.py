@@ -19,9 +19,9 @@ class ExtendedPortfolio(Portfolio):
     @custom_method
     def expected_log_returns(self):
         """Get log return mean series per column/group based on portfolio value."""
-        log_nb = njit(lambda col, returns: log(returns + 1))
+        log_nb = njit(lambda col, pnl: log(pnl/100 + 1))
         mean_nb = njit(lambda col, l_rets: nanmean(l_rets))
-        return self.returns().vbt.apply_and_reduce(log_nb, mean_nb, wrap_kwargs=dict(name_or_index="expected_log_returns"))
+        return self.trades.pnl.to_matrix().vbt.apply_and_reduce(log_nb, mean_nb, wrap_kwargs=dict(name_or_index="expected_log_returns"))
 
 
 def file_to_data_frame(filepath) -> (str, pd.DataFrame):
