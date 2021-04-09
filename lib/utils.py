@@ -15,13 +15,13 @@ from vectorbt import Portfolio
 from vectorbt.utils.decorators import custom_method
 
 
-class ExtendedProtfolio(Portfolio):
+class ExtendedPortfolio(Portfolio):
     @custom_method
     def expected_log_returns(self):
         """Get log return mean series per column/group based on portfolio value."""
         log_nb = njit(lambda col, returns: log(returns + 1))
         mean_nb = njit(lambda col, l_rets: nanmean(l_rets))
-        return self.returns().vbt.apply_and_reduce(log_nb, mean_nb)
+        return self.returns().vbt.apply_and_reduce(log_nb, mean_nb, wrap_kwargs=dict(name_or_index="expected_log_returns"))
 
 
 def file_to_data_frame(filepath) -> (str, pd.DataFrame):
@@ -76,7 +76,7 @@ def create_windows(ohlc: pd.Series, n=5, window_len=0.6, training_set_len=0.4) -
     # (train_price, train_indexes), (test_price, test_indexes)
     windows = ohlc.vbt.rolling_split(**split_kwargs)
     split_kwargs["plot"] = True
-    split_kwargs["trace_names"] = ['train-sample', 'test-sample']
+    split_kwargs["trace_names"] = ['in-sample', 'out-sample']
     fig = ohlc.vbt.rolling_split(**split_kwargs)
     return fig, windows
 
@@ -122,8 +122,8 @@ def window_cross_validation(dirname, ):
         direction='all',  # long and short todo falta ver esto
         freq='d'  # todo falta ver esto
     )
-    in_hold_elr = ExtendedProtfolio.from_holding(training_price, **portfolio_kwargs).expected_log_returns()
-    out_hold_elr = ExtendedProtfolio.from_holding(test_price, **portfolio_kwargs).expected_log_returns()
+    in_hold_elr = ExtendedPortfolio.from_holding(training_price, **portfolio_kwargs).expected_log_returns()
+    out_hold_elr = ExtendedPortfolio.from_holding(test_price, **portfolio_kwargs).expected_log_returns()
 
     # Simulamos con el training set y el rango de parámetros
     params_range = arange(10, 50)

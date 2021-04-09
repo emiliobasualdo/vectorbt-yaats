@@ -1,7 +1,7 @@
 #%%
 from numba import njit
 import numpy as np
-from lib.utils import create_windows, file_to_data_frame, ExtendedProtfolio
+from lib.utils import create_windows, file_to_data_frame, ExtendedPortfolio
 import pandas as pd
 import vectorbt as vbt
 
@@ -24,14 +24,14 @@ figure, windows = create_windows(ohlc=ohlc, n=5, window_len=0.6, training_set_le
 
 #%%
 portfolio_kwargs = dict(
-    direction='all',  # long and short todo falta ver esto
-    freq='d'  # todo falta ver esto
+    direction='longonly',
+    freq='m'
 )
 #%%
 # simulamos Buy&Hold de cada training y test window y tomamo el expected log returns (elr)
 close_columns = list(filter(lambda col: "Close" in col[1], training_df.columns))
-in_hold_elr = ExtendedProtfolio.from_holding(training_df[close_columns], **portfolio_kwargs).expected_log_returns()
-out_hold_elr = ExtendedProtfolio.from_holding(test_df[close_columns], **portfolio_kwargs).expected_log_returns()
+in_hold_elr = ExtendedPortfolio.from_holding(training_df[close_columns], **portfolio_kwargs).expected_log_returns()
+out_hold_elr = ExtendedPortfolio.from_holding(test_df[close_columns], **portfolio_kwargs).expected_log_returns()
 print(in_hold_elr, out_hold_elr)
 
 
@@ -46,10 +46,6 @@ def alpha_from_df(ohlc_windows):
 
 #%%
 # creamos el indicador
-@njit
-def apply_func_nb_org(alpha: np.ndarray):
-    return alpha
-
 
 @njit
 def apply_func_nb(open: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, buy_threshold: float,
@@ -76,11 +72,11 @@ def simulate_all_params(ohlc_windows, params_range):
                             param_product=True,
                             short_name="Momentum")
     ones = np.full(momentum.signal.shape, 1)
-    entry_signal = momentum.signal_equal(ones, crossover=True, multiple=True)
-    exit_signal = momentum.signal_equal(-ones, crossover=True, multiple=True)
+    entry_signal = momentum.signal_equal(ones, crossover=True)
+    exit_signal = momentum.signal_equal(-ones, crossover=True)
 
     trade_price = ohlc_windows.xs("Close", level=1, axis=1)
-    return ExtendedProtfolio.from_signals(trade_price.to_numpy(), entry_signal, exit_signal, **portfolio_kwargs)
+    return ExtendedPortfolio.from_signals(trade_price, entry_signal, exit_signal, **portfolio_kwargs)
 
 
 # Simulamos
