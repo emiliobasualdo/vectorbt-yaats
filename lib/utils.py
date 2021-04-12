@@ -1,17 +1,11 @@
-import argparse
-import logging
-import os
-import sys
-from datetime import datetime
 from math import floor
 from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
-import vectorbt as vbt
 from numba import njit
-from numpy import log, nanmean, arange
+from numpy import log, nanmean
 from vectorbt import Portfolio
 from vectorbt.utils.decorators import custom_method
 
@@ -28,6 +22,9 @@ class ExtendedPortfolio(Portfolio):
         mean_nb = njit(lambda col, l_rets: nanmean(l_rets))
         return self.trades.pnl.to_matrix().vbt.apply_and_reduce(log_nb, mean_nb, wrap_kwargs=dict(name_or_index="expected_log_returns"))
 
+def is_notebook():
+    import __main__ as main
+    return not hasattr(main, '__file__')
 
 def file_to_data_frame(filepath) -> (str, pd.DataFrame):
     df = pd.read_csv(filepath, index_col=1, parse_dates=True, infer_datetime_format=True)
@@ -50,13 +47,6 @@ def directory_to_data_frame_list(directory) -> List[Tuple[str, pd.DataFrame]]:
     return series
 
 
-def expected_log_returns(trades_df: pd.DataFrame) -> float:
-    # todo revisar cuentas con los muchachos
-    trades_df["Return"] = trades_df["ExitPrice"] / trades_df["EntryPrice"]
-    trades_df["Log Returns"] = np.log(trades_df["Return"])
-    return 0 if not len(trades_df.index) else trades_df["Log Returns"].sum() / len(trades_df.index)
-
-
 def create_windows(ohlc: pd.Series, n=5, window_len=0.6, right_set_len=0.4) -> ((), ()):
     split_kwargs = dict(
         n=n,
@@ -72,3 +62,16 @@ def create_windows(ohlc: pd.Series, n=5, window_len=0.6, right_set_len=0.4) -> (
     fig = ohlc.vbt.rolling_split(**split_kwargs)
     return fig, windows
 
+def get_best_index(performance, higher_better=True):
+    if higher_better:
+        return performance[performance.groupby('split_idx').idxmax()].index
+    return performance[performance.groupby('split_idx').idxmin()].index
+
+def get_best_params(best_index, level_name):
+    return best_index.get_level_values(level_name).to_numpy()
+
+def get_best_pairs(_2d_df, param_1_name, param_2_name):
+    in_best_index = get_best_index(_2d_df)
+    in_best_param1 = get_best_params(in_best_index, param_1_name)
+    in_best_param2 = get_best_params(in_best_index, param_2_name)
+    return np.array(list(zip(in_best_param1, in_best_param2)))

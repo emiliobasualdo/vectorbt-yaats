@@ -17,9 +17,11 @@ from numba import njit
 from math import e
 
 from vectorbt.generic.nb import diff_nb
-from lib.utils import directory_to_data_frame_list, ExtendedPortfolio
-
-
+from lib.utils import directory_to_data_frame_list, ExtendedPortfolio, is_notebook
+if is_notebook():
+    print("yeah baby")
+else:
+    print("No baby")
 # In[ ]:
 
 
