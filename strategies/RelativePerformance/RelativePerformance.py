@@ -69,6 +69,7 @@ WLR = vbt.IndicatorFactory(
     input_names=['volume', 'lr'],
     output_names=['wlr']
 ).from_apply_func(wlr_nb, use_ray=True)
+print("hasta acá todo joya1")
 
 
 # In[ ]:
@@ -83,8 +84,8 @@ mkt_lr = wlr_ind.wlr.sum(axis=1, skipna=False)
 
 
 # plotear todos los assests hace un gráfico muy feo, entonces solo muestro algunos
-fig = mkt_lr.vbt.plot(trace_names=["MKT_LR"])
-lr_ind.lr[["ADA", "BTC"]].vbt.plot(fig=fig).show()
+#fig = mkt_lr.vbt.plot(trace_names=["MKT_LR"])
+#lr_ind.lr[["ADA", "BTC"]].vbt.plot(fig=fig).show()
 
 
 # In[ ]:
@@ -107,11 +108,12 @@ MKT_BANDS = vbt.IndicatorFactory(
 # In[ ]:
 
 
-filters = np.linspace(0.00001, 0.005, 60, endpoint=False)
+filters = np.linspace(0.00001, 0.005, 50, endpoint=False)
 mkt_bands_ind = MKT_BANDS.run(mkt_lr=mkt_lr, upper_filter=filters , lower_filter=filters,
                         per_column=False,
                         param_product=True,
                         short_name="mkt")
+print("hasta acá todo joya2")
 del filters
 
 
@@ -133,35 +135,43 @@ gc.collect()
 # In[ ]:
 
 
+print("hasta acá todo joya3")
 entries =  mkt_bands_ind.upper_above(ada_lr, crossover=True)
 exits = mkt_bands_ind.lower_below(ada_lr, crossover=True)
-ada_port = ExtendedPortfolio.from_signals(ada_close, entries, exits, **portfolio_kwargs)
-del entries, exits
+ada_port = ExtendedPortfolio.from_signals(ada_close, entries, exits, **portfolio_kwargs,  max_logs=0)
+del entries, exits, ada_close
+gc.collect()
+
+
+# In[1]:
+
+
+print("hasta acá todo joya4")
+ada_port.expected_log_returns().vbt.heatmap(title="ADA's Expected Log Return").write_html(f"{current_dir}/ADA_exp_log_ret.html")
+ada_port.sharpe_ratio().vbt.heatmap(title="ADA's Sharpe Ratio").write_html(f"{current_dir}/ADA_sharpe-ratio.html")
+del ada_port
 gc.collect()
 
 
 # In[ ]:
 
 
+print("hasta acá todo joya5")
 entries =  mkt_bands_ind.upper_above(btc_lr, crossover=True)
 exits = mkt_bands_ind.lower_below(btc_lr, crossover=True)
-btc_port = ExtendedPortfolio.from_signals(btc_close, entries, exits, **portfolio_kwargs)
-del entries, exits
+btc_port = ExtendedPortfolio.from_signals(btc_close, entries, exits, **portfolio_kwargs,  max_logs=0)
+del entries, exits, btc_close
 gc.collect()
 
 
 # In[ ]:
 
 
-ada_port.expected_log_returns().vbt.heatmap(title="ADA's Expected Log Return").write_html(f"{current_dir}/ADA_exp_log_ret.html")
+print("hasta acá todo joya6")
 btc_port.expected_log_returns().vbt.heatmap(title="BTC's Expected Log Return").write_html(f"{current_dir}/BTC_exp_log_ret.html")
-
-
-# In[ ]:
-
-
-ada_port.sharpe_ratio().vbt.heatmap(title="ADA's Sharpe Ratio").write_html(f"{current_dir}/ADA_sharpe-ratio.html")
 btc_port.sharpe_ratio().vbt.heatmap(title="BTC's Sharpe Ratio").write_html(f"{current_dir}/BTC_sharpe-ratio.html")
+del btc_port
+gc.collect()
 
 
 # In[ ]:
