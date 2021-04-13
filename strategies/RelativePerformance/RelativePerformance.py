@@ -17,43 +17,72 @@ from numba import njit
 from math import e
 
 from vectorbt.generic.nb import diff_nb
-from lib.utils import directory_to_data_frame_list, ExtendedPortfolio, is_notebook
-if is_notebook():
-    print("yeah baby")
-else:
-    print("No baby")
+from lib.utils import directory_to_data_frame_list, ExtendedPortfolio, create_windows, get_best_pairs
+from lib.utils import is_notebook
+
+
 # In[ ]:
 
 
-current_dir = os.path.dirname(os.path.realpath(__file__))
-directory = "/home/ec2-user/data/long/"
+current_dir = os.path.dirname(os.path.realpath("__file__"))
+directory = "/home/ec2-user/data/long"
 ohlcv_series_list = directory_to_data_frame_list(directory)
 # concatenamos los dfs
 names = list(map(lambda t: t[0], ohlcv_series_list))
-dfs = list(map(lambda t: t[1].get(["Close", "Volume"]), ohlcv_series_list))
+dfs = list(map(lambda t: t[1], ohlcv_series_list))
+
+ohlc_dict = {
+'Open':'first',
+'High':'max',
+'Low':'min',
+'Close': 'last',
+'Volume': 'sum'
+}
+# Resampleamos la información a candles de cada 5 min para reducir la memora necesaria
+# además solo agarramos close y volumne
+for i in range(len(dfs)):
+    dfs[i] = dfs[i].resample('5T', closed='left', label='left').apply(ohlc_dict).get(["Close", "Volume"])
+
 ov_df = pd.concat(dfs, axis=1, keys=names)
 # borramos las filas que tengan nan(parece que algunos pueden estar desalineados)
 ov_df.dropna(inplace=True)
 ov_df.columns.set_names(["symbol", "value"], inplace=True)
-close = ov_df.xs('Close', level='value', axis=1)
-volume = ov_df.xs('Volume', level='value', axis=1)
-del ohlcv_series_list, names, ov_df
-gc.collect()
-close.head()
+del ohlcv_series_list, names, dfs
+ov_df.head()
 
 
 # In[ ]:
 
 
+figure, windows = create_windows(ohlc=ov_df, n=10, window_len=0.6, right_set_len=0.3*0.9)
+(in_windows, in_windows_index), (out_windows, _) = windows
+del _
+print("Done creating windows")
+
+
+# In[ ]:
+
+
+if is_notebook():
+    figure.show()
+del figure, ov_df
+
+
+# In[ ]:
+
+
+portfolio_kwargs = dict(
+    direction='longonly',
+    freq='m',
+)
 # creamos el indicador para el lr y otro para el wlr
 # lo hago por separado para poder calcular el mlr
-# con data de varios activos del mercado
+# con data de varios activos #del mercado
 # y luego solo utiliza lr con los que me interesa
 @njit
 def lr_nb(close):
     c_log = np.log(close)
-    lr = diff_nb(c_log)
-    return lr
+    return diff_nb(c_log)
 
 LR = vbt.IndicatorFactory(
     input_names=['close'],
@@ -64,116 +93,195 @@ LR = vbt.IndicatorFactory(
 def wlr_nb(volume, lr):
     mkt_vol = volume.sum(axis=1)
     mkt_ratio = (volume.T / mkt_vol).T
-    wrl =  lr * mkt_ratio
-    return wrl
+    return lr * mkt_ratio
 
 WLR = vbt.IndicatorFactory(
     input_names=['volume', 'lr'],
     output_names=['wlr']
 ).from_apply_func(wlr_nb, use_ray=True)
-print("hasta acá todo joya1")
 
-
-# In[ ]:
-
-
-lr_ind = LR.run(close)
-wlr_ind = WLR.run(volume, lr_ind.lr)
-mkt_lr = wlr_ind.wlr.sum(axis=1, skipna=False)
-
-
-# In[ ]:
-
-
-# plotear todos los assests hace un gráfico muy feo, entonces solo muestro algunos
-#fig = mkt_lr.vbt.plot(trace_names=["MKT_LR"])
-#lr_ind.lr[["ADA", "BTC"]].vbt.plot(fig=fig).show()
-
-
-# In[ ]:
-
-
-#creamos el indicador para las bandas
+ #creamos el indicador para las bandas
 @njit
 def mkt_band_nb(mkt_lr, upper_filter, lower_filter):
-   upper = np.where(mkt_lr >= upper_filter, mkt_lr, np.nan)
-   lower = np.where(mkt_lr <= -lower_filter, mkt_lr, np.nan)
-   return upper, lower
+    filtered = np.where(mkt_lr >= upper_filter, mkt_lr, np.nan)
+    filtered = np.where(mkt_lr <= -lower_filter, mkt_lr, filtered)
+    return filtered
 
 MKT_BANDS = vbt.IndicatorFactory(
-   input_names=['mkt_lr'],
-   param_names=['upper_filter', 'lower_filter'],
-   output_names=['upper', 'lower']
+    input_names=['mkt_lr'],
+    param_names=['upper_filter', 'lower_filter'],
+    output_names=['filtered']
 ).from_apply_func(mkt_band_nb, use_ray=True)
 
 
 # In[ ]:
 
 
-filters = np.linspace(0.00001, 0.005, 50, endpoint=False)
-mkt_bands_ind = MKT_BANDS.run(mkt_lr=mkt_lr, upper_filter=filters , lower_filter=filters,
+# lr = log_return
+# wlr = weighted log_return = lr * (Vi / Vmercado)
+# mkt_lr = sum(wlr)
+in_close = in_windows.xs('Close', level='value', axis=1)
+in_volume = in_windows.xs('Volume', level='value', axis=1)
+lr_ind = LR.run(in_close)
+wlr_ind = WLR.run(in_volume, lr_ind.lr)
+mkt_lr = wlr_ind.wlr.sum(axis=1, level="split_idx", skipna=False)
+del in_volume # esto no se usa más
+print("Done calculating mkt_lr")
+lr_ind.lr.head()
+
+
+# In[ ]:
+
+
+mkt_lr.head()
+
+
+# In[ ]:
+
+
+# Acá filtramos los thresholds del mkt_lr a partir del cual compramos o vendemos.
+upper_fltr = np.linspace(0.00001, 0.003, 60, endpoint=False)
+lower_fltr = np.linspace(0.00001, 0.005, 60, endpoint=False)
+mkt_bands_ind = MKT_BANDS.run(mkt_lr=mkt_lr, upper_filter=upper_fltr , lower_filter=lower_fltr,
                         per_column=False,
                         param_product=True,
                         short_name="mkt")
-print("hasta acá todo joya2")
-del filters
+del upper_fltr, lower_fltr, mkt_lr
+print("Done calculating mkt_bands")
 
 
 # In[ ]:
 
 
-portfolio_kwargs = dict(
-    direction='longonly',
-    freq='m',
-)
-ada_lr = lr_ind.lr["ADA"]
-ada_close = close["ADA"]
-btc_lr = lr_ind.lr["BTC"]
-btc_close = close["BTC"]
-del close
+if is_notebook():
+    # Grafico un resultadoo arbitrario selecionando filtros arbitrarios para ver como ejemplo el funcionamiento de la estategia
+    split_index = 5
+    _mkt_lr_arb = mkt_lr[split_index]  # agarro el mkt_lr de algúna ventana
+    lr_ada = lr_ind.lr[(split_index, "ADA")] # agarro el lr de ADA en esa ventana
+    # borramos el mkt cuando está entre 0.0005 y - 0.0005
+    filtered = np.where(_mkt_lr_arb >= 0.0005, _mkt_lr_arb, np.nan)
+    filtered = np.where(_mkt_lr_arb <= -0.0005, _mkt_lr_arb, filtered)
+    fig = pd.DataFrame({
+            "lr_ada" : lr_ada,
+            "mkt_lr": _mkt_lr_arb,
+            "mkt_lr_filtered" : filtered
+    }).vbt.plot()
+    pd.DataFrame({
+            "entries": np.where(filtered >= lr_ada, _mkt_lr_arb, np.nan), # compramos cuando el mercado está por encima de ada
+            "exits": np.where(filtered <= lr_ada, _mkt_lr_arb, np.nan)
+    }).vbt.scatterplot(fig=fig).show()
+    del _mkt_lr_arb, lr_ada, filtered, fig
+
+
+# In[ ]:
+
+
+# Ya generamos todos los datos necesarios, ahora vamos a correr todas las simulaciones para cada assets que nos
+# interesa testear
+# para que no muera por memoria a la mitad y perder todo lo porcesado hasta el momento, me aseguro de que todas
+#  las keys existan en el df
+test_asset_list = ["ADA", "BTC"]
+assert( set(test_asset_list).issubset(in_close.columns.get_level_values(level="symbol").unique()))
+
+
+# In[ ]:
+
+
+# Recolectamos el close y el lr de cada uno para poder borrar de memoria el df grande de todos los close y los lrs que no usamos
+# puesto que close y lr son varias veces más grandes que el lr y close individual
+lrs = {}
+close = {}
+for asset in test_asset_list:
+    lrs[asset] = lr_ind.lr.xs(asset, level='symbol', axis=1)
+    close[asset] = in_close.xs(asset, level='symbol', axis=1)
+    print(f"Done separating close and lrs for {asset}")
+del in_close, lr_ind
 gc.collect()
 
 
 # In[ ]:
 
 
-print("hasta acá todo joya3")
-entries =  mkt_bands_ind.upper_above(ada_lr, crossover=True)
-exits = mkt_bands_ind.lower_below(ada_lr, crossover=True)
-ada_port = ExtendedPortfolio.from_signals(ada_close, entries, exits, **portfolio_kwargs,  max_logs=0)
-del entries, exits, ada_close
-gc.collect()
+# corremos la simulación para cada asset
+portfolios = {}
+for asset in test_asset_list:
+    lr = lrs[asset]
+    entries =  mkt_bands_ind.filtered_above(lr, crossover=True)
+    exits = mkt_bands_ind.filtered_below(lr, crossover=True)
+    portfolios[asset] = ExtendedPortfolio.from_signals(close[asset], entries, exits, **portfolio_kwargs, max_logs=0)
+    del  entries, exits, lrs[asset] # el close no se borra porque lo vamos a volver a usar
+    gc.collect()
+    print(f"Done optimizing {asset}")
+params_names = mkt_bands_ind.level_names
+del mkt_bands_ind
 
 
-# In[1]:
+# In[ ]:
 
 
-print("hasta acá todo joya4")
-ada_port.expected_log_returns().vbt.heatmap(title="ADA's Expected Log Return").write_html(f"{current_dir}/ADA_exp_log_ret.html")
-ada_port.sharpe_ratio().vbt.heatmap(title="ADA's Sharpe Ratio").write_html(f"{current_dir}/ADA_sharpe-ratio.html")
-del ada_port
+# buscamos la mejor combinación de filtros y ploteamos la performace de todas las combinanciones
+def dropnan(s):
+    return s[~np.isnan(s)]
+in_best_fltr_pairs = {}
+for asset in test_asset_list:
+    port = portfolios[asset]
+    in_best_fltr_pairs[asset] = get_best_pairs(port.expected_log_returns(), *params_names)
+    elr_volume = dropnan(port.expected_log_returns()).vbt.volume(title=f"{asset}'s Expected Log Return")
+    sharpe_volume = dropnan(port.sharpe_ratio()).vbt.volume(title=f"{asset}'s Sharpe Ratio")
+    del portfolios[asset]
+    gc.collect()
+    # Cuando corremos simulaciones largas, las corremos con python normal y
+    # en eso casos queremos guardar los gráficos en un archivo
+    if is_notebook():
+        elr_volume.show()
+        sharpe_volume.show()
+    else:
+        elr_volume.write_html(f"{current_dir}/{asset}_optimization_exp_log_ret.html")
+        sharpe_volume.write_html(f"{current_dir}/{asset}_optimization_sharpe-ratio.html")
+    del elr_volume, sharpe_volume
+    print(f"Done plotting {asset}")
 gc.collect()
 
 
 # In[ ]:
 
 
-print("hasta acá todo joya5")
-entries =  mkt_bands_ind.upper_above(btc_lr, crossover=True)
-exits = mkt_bands_ind.lower_below(btc_lr, crossover=True)
-btc_port = ExtendedPortfolio.from_signals(btc_close, entries, exits, **portfolio_kwargs,  max_logs=0)
-del entries, exits, btc_close
+# acá arranca la parte de correr las simulaciones con los datos del out y los parámetros ya optimizados
+out_close = out_windows.xs('Close', level='value', axis=1)
+out_volume = out_windows.xs('Volume', level='value', axis=1)
+lr_ind = LR.run(out_close)
+wlr_ind = WLR.run(out_volume, lr_ind.lr)
+mkt_lr = wlr_ind.wlr.sum(axis=1, level="split_idx", skipna=False)
+del out_windows, wlr_in
 gc.collect()
 
 
 # In[ ]:
 
 
-print("hasta acá todo joya6")
-btc_port.expected_log_returns().vbt.heatmap(title="BTC's Expected Log Return").write_html(f"{current_dir}/BTC_exp_log_ret.html")
-btc_port.sharpe_ratio().vbt.heatmap(title="BTC's Sharpe Ratio").write_html(f"{current_dir}/BTC_sharpe-ratio.html")
-del btc_port
-gc.collect()
+# para cada activo de los que me interesa tradear simulo el resultado de ser corrido con los parámetros optimizados
+for asset in test_asset_list:
+    in_best_pairs = np.array(in_best_fltr_pairs[asset])
+    upper_fltr = in_best_pairs[:,0]
+    lower_fltr = in_best_pairs[:,1]
+    mkt_bands_ind = MKT_BANDS.run(mkt_lr=mkt_lr, upper_filter=upper_fltr , lower_filter=lower_fltr,
+                        per_column=True,
+                        param_product=False,
+                        short_name="mkt")
+    lr = lr_ind.lr.xs(asset, level='symbol', axis=1)
+    close = out_close.xs(asset, level='symbol', axis=1)
+    entries =  mkt_bands_ind.filtered_above(lr, crossover=True)
+    exits = mkt_bands_ind.filtered_below(lr, crossover=True)
+    port = ExtendedPortfolio.from_signals(close, entries, exits, **portfolio_kwargs, max_logs=0)
+    exp_plot = port.expected_log_returns().vbt.plot(title=f"{asset}'s Expected Log Return")
+    sharpe_plot = port.sharpe_ratio().vbt.plot(title=f"{asset}'s Sharpe ratio")
+    if is_notebook():
+        exp_plot().show()
+        sharpe_plot.show()
+    else:
+        exp_plot.write_html(f"{current_dir}/{asset}_simulation_exp_log_ret.html")
+        sharpe_plot.write_html(f"{current_dir}/{asset}_simulation_sharpe-ratio.html")
+    print(f"Done simulating {asset}")
 
 
 # In[ ]:
