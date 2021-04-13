@@ -78,3 +78,13 @@ def get_best_pairs(performance, param_1_name, param_2_name, return_index=False):
         return in_best_index, np.array(list(zip(in_best_param1, in_best_param2)))
     return np.array(list(zip(in_best_param1, in_best_param2)))
 
+def resample_ohlcv(df, new_frequency, columns=('Open','High','Low','Close','Volume')):
+    ohlc_dict = {
+        'Open':'first',
+        'High':'max',
+        'Low':'min',
+        'Close': 'last',
+        'Volume': 'sum'
+    }
+    apply_dict = {k:ohlc_dict[k] for k in columns}
+    return df.resample('5T', closed='left', label='left').apply(apply_dict)
