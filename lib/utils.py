@@ -14,17 +14,22 @@ class ExtendedPortfolio(Portfolio):
     @custom_method
     def expected_log_returns(self):
         """Get log return mean series per column/group based on portfolio value."""
+
         @njit
         def log_nb(col, pnl):
             pnl = pnl[~np.isnan(pnl)]
-            return log(pnl/100 + 1)
-        #log_nb = njit(lambda col, pnl: log(pnl/100 + 1))
+            return log(pnl / 100 + 1)
+
+        # log_nb = njit(lambda col, pnl: log(pnl/100 + 1))
         mean_nb = njit(lambda col, l_rets: nanmean(l_rets))
-        return self.trades.pnl.to_matrix().vbt.apply_and_reduce(log_nb, mean_nb, wrap_kwargs=dict(name_or_index="expected_log_returns"))
+        return self.trades.pnl.to_matrix().vbt.apply_and_reduce(log_nb, mean_nb,
+                                                                wrap_kwargs=dict(name_or_index="expected_log_returns"))
+
 
 def is_notebook():
     import __main__ as main
     return not hasattr(main, '__file__')
+
 
 def file_to_data_frame(filepath) -> (str, pd.DataFrame):
     df = pd.read_csv(filepath, index_col=1, parse_dates=True, infer_datetime_format=True)
@@ -62,13 +67,16 @@ def create_windows(ohlc: pd.Series, n=5, window_len=0.6, right_set_len=0.4) -> (
     fig = ohlc.vbt.rolling_split(**split_kwargs)
     return fig, windows
 
+
 def get_best_index(performance, higher_better=True):
     if higher_better:
         return performance[performance.groupby('split_idx').idxmax()].index
     return performance[performance.groupby('split_idx').idxmin()].index
 
+
 def get_params_by_index(index, level_name):
     return index.get_level_values(level_name).to_numpy()
+
 
 def get_best_pairs(performance, param_1_name, param_2_name, return_index=False):
     in_best_index = get_best_index(performance)
@@ -78,13 +86,17 @@ def get_best_pairs(performance, param_1_name, param_2_name, return_index=False):
         return in_best_index, np.array(list(zip(in_best_param1, in_best_param2)))
     return np.array(list(zip(in_best_param1, in_best_param2)))
 
-def resample_ohlcv(df, new_frequency, columns=('Open','High','Low','Close','Volume')):
+
+def resample_ohlcv(df, new_frequency, columns=None):
     ohlc_dict = {
-        'Open':'first',
-        'High':'max',
-        'Low':'min',
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
         'Close': 'last',
         'Volume': 'sum'
     }
-    apply_dict = {k:ohlc_dict[k] for k in columns}
-    return df.resample('5T', closed='left', label='left').apply(apply_dict)
+    if not columns:
+        columns = list(filter(lambda col: col in ohlc_dict.keys(), df.columns))
+
+    apply_dict = {k: ohlc_dict[k] for k in columns}
+    return df.resample(new_frequency, closed='left', label='left').apply(apply_dict)
