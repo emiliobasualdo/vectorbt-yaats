@@ -51,7 +51,7 @@ def create_windows(ohlc: pd.Series, n=5, window_len=0.6, right_set_len=0.4) -> (
     split_kwargs = dict(
         n=n,
         window_len=floor(len(ohlc) * window_len),
-        set_lens=(window_len * right_set_len,),
+        set_lens=(right_set_len,),
         left_to_right=False
     )  # n windows, each window_len long, reserve training_set_len days for test/training(nomeacuerdo) #todo revisar
 
@@ -67,11 +67,14 @@ def get_best_index(performance, higher_better=True):
         return performance[performance.groupby('split_idx').idxmax()].index
     return performance[performance.groupby('split_idx').idxmin()].index
 
-def get_best_params(best_index, level_name):
-    return best_index.get_level_values(level_name).to_numpy()
+def get_params_by_index(index, level_name):
+    return index.get_level_values(level_name).to_numpy()
 
-def get_best_pairs(_2d_df, param_1_name, param_2_name):
-    in_best_index = get_best_index(_2d_df)
-    in_best_param1 = get_best_params(in_best_index, param_1_name)
-    in_best_param2 = get_best_params(in_best_index, param_2_name)
+def get_best_pairs(performance, param_1_name, param_2_name, return_index=False):
+    in_best_index = get_best_index(performance)
+    in_best_param1 = get_params_by_index(in_best_index, param_1_name)
+    in_best_param2 = get_params_by_index(in_best_index, param_2_name)
+    if return_index:
+        return in_best_index, np.array(list(zip(in_best_param1, in_best_param2)))
     return np.array(list(zip(in_best_param1, in_best_param2)))
+
