@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[24]:
 
 
 import gc
@@ -25,23 +25,23 @@ from lib.utils import is_notebook
 
 
 current_dir = os.path.dirname(os.path.realpath("__file__"))
-directory = "/home/ec2-user/data/long"
+directory = "/home/ec2-user/data/long/"
 ohlcv_series_list = directory_to_data_frame_list(directory)
 # concatenamos los dfs
 names = list(map(lambda t: t[0], ohlcv_series_list))
-dfs = list(map(lambda t: t[1], ohlcv_series_list))
+dfs = list(map(lambda t: t[1].get(["Close", "Volume"]), ohlcv_series_list))
 
 ohlc_dict = {
-'Open':'first',
-'High':'max',
-'Low':'min',
+#'Open':'first',
+#'High':'max',
+#'Low':'min',
 'Close': 'last',
 'Volume': 'sum'
 }
-# Resampleamos la información a candles de cada 5 min para reducir la memora necesaria
+# Resampleamos la información a candles más chicas para reducir la memora necesaria
 # además solo agarramos close y volumne
 for i in range(len(dfs)):
-    dfs[i] = dfs[i].resample('5T', closed='left', label='left').apply(ohlc_dict).get(["Close", "Volume"])
+    dfs[i] = dfs[i].resample('5T', closed='left', label='left').apply(ohlc_dict)
 
 ov_df = pd.concat(dfs, axis=1, keys=names)
 # borramos las filas que tengan nan(parece que algunos pueden estar desalineados)
@@ -55,7 +55,7 @@ ov_df.head()
 
 
 figure, windows = create_windows(ohlc=ov_df, n=10, window_len=0.6, right_set_len=0.3*0.9)
-(in_windows, in_windows_index), (out_windows, _) = windows
+(in_windows, _), (out_windows, _) = windows
 del _
 print("Done creating windows")
 
@@ -125,8 +125,8 @@ in_volume = in_windows.xs('Volume', level='value', axis=1)
 lr_ind = LR.run(in_close)
 wlr_ind = WLR.run(in_volume, lr_ind.lr)
 mkt_lr = wlr_ind.wlr.sum(axis=1, level="split_idx", skipna=False)
-del in_volume # esto no se usa más
 print("Done calculating mkt_lr")
+del in_volume, in_windows # esto no se usa más
 lr_ind.lr.head()
 
 
@@ -134,20 +134,6 @@ lr_ind.lr.head()
 
 
 mkt_lr.head()
-
-
-# In[ ]:
-
-
-# Acá filtramos los thresholds del mkt_lr a partir del cual compramos o vendemos.
-upper_fltr = np.linspace(0.00001, 0.003, 60, endpoint=False)
-lower_fltr = np.linspace(0.00001, 0.005, 60, endpoint=False)
-mkt_bands_ind = MKT_BANDS.run(mkt_lr=mkt_lr, upper_filter=upper_fltr , lower_filter=lower_fltr,
-                        per_column=False,
-                        param_product=True,
-                        short_name="mkt")
-del upper_fltr, lower_fltr, mkt_lr
-print("Done calculating mkt_bands")
 
 
 # In[ ]:
@@ -171,6 +157,22 @@ if is_notebook():
             "exits": np.where(filtered <= lr_ada, _mkt_lr_arb, np.nan)
     }).vbt.scatterplot(fig=fig).show()
     del _mkt_lr_arb, lr_ada, filtered, fig
+    gc.collect()
+
+
+# In[ ]:
+
+
+# Acá filtramos los thresholds del mkt_lr a partir del cual compramos o vendemos.
+upper_fltr = np.linspace(0.00001, 0.003, 50, endpoint=False)
+lower_fltr = np.linspace(0.00001, 0.005, 50, endpoint=False)
+mkt_bands_ind = MKT_BANDS.run(mkt_lr=mkt_lr, upper_filter=upper_fltr , lower_filter=lower_fltr,
+                        per_column=False,
+                        param_product=True,
+                        short_name="mkt")
+del upper_fltr, lower_fltr, mkt_lr
+gc.collect()
+print("Done calculating mkt_bands")
 
 
 # In[ ]:
@@ -189,13 +191,15 @@ assert( set(test_asset_list).issubset(in_close.columns.get_level_values(level="s
 
 # Recolectamos el close y el lr de cada uno para poder borrar de memoria el df grande de todos los close y los lrs que no usamos
 # puesto que close y lr son varias veces más grandes que el lr y close individual
-lrs = {}
-close = {}
+_lrs = {}
+_close = {}
 for asset in test_asset_list:
-    lrs[asset] = lr_ind.lr.xs(asset, level='symbol', axis=1)
-    close[asset] = in_close.xs(asset, level='symbol', axis=1)
+    _lrs[asset] = lr_ind.lr.xs(asset, level='symbol', axis=1)
+    _close[asset] = in_close.xs(asset, level='symbol', axis=1)
     print(f"Done separating close and lrs for {asset}")
 del in_close, lr_ind
+in_close = _close
+in_lrs = _lrs
 gc.collect()
 
 
@@ -203,43 +207,35 @@ gc.collect()
 
 
 # corremos la simulación para cada asset
-portfolios = {}
-for asset in test_asset_list:
-    lr = lrs[asset]
-    entries =  mkt_bands_ind.filtered_above(lr, crossover=True)
-    exits = mkt_bands_ind.filtered_below(lr, crossover=True)
-    portfolios[asset] = ExtendedPortfolio.from_signals(close[asset], entries, exits, **portfolio_kwargs, max_logs=0)
-    del  entries, exits, lrs[asset] # el close no se borra porque lo vamos a volver a usar
-    gc.collect()
-    print(f"Done optimizing {asset}")
-params_names = mkt_bands_ind.level_names
-del mkt_bands_ind
-
-
-# In[ ]:
-
-
-# buscamos la mejor combinación de filtros y ploteamos la performace de todas las combinanciones
 def dropnan(s):
     return s[~np.isnan(s)]
 in_best_fltr_pairs = {}
+params_names = mkt_bands_ind.level_names
 for asset in test_asset_list:
-    port = portfolios[asset]
-    in_best_fltr_pairs[asset] = get_best_pairs(port.expected_log_returns(), *params_names)
-    elr_volume = dropnan(port.expected_log_returns()).vbt.volume(title=f"{asset}'s Expected Log Return")
-    sharpe_volume = dropnan(port.sharpe_ratio()).vbt.volume(title=f"{asset}'s Sharpe Ratio")
-    del portfolios[asset]
+    lr = in_lrs[asset]
+    close = in_close[asset]
+    entries =  mkt_bands_ind.filtered_above(lr, crossover=True)
+    exits = mkt_bands_ind.filtered_below(lr, crossover=True)
+    del lr, in_lrs[asset]
     gc.collect()
-    # Cuando corremos simulaciones largas, las corremos con python normal y
-    # en eso casos queremos guardar los gráficos en un archivo
+    print(f"Running optimizing for {asset}")
+    port = ExtendedPortfolio.from_signals(close, entries, exits, **portfolio_kwargs, max_logs=0)
+    del  entries, exits, close, in_close[asset]
+    gc.collect()
+    print(f"Done optimizing {asset}")
+    
+    # buscamos la mejor combinación de filtros
+    in_best_fltr_pairs[asset] = get_best_pairs(port.expected_log_returns(), *params_names)
+
+    # ploteamos la performace de todas las combinanciones
     if is_notebook():
-        elr_volume.show()
-        sharpe_volume.show()
-    else:
-        elr_volume.write_html(f"{current_dir}/{asset}_optimization_exp_log_ret.html")
-        sharpe_volume.write_html(f"{current_dir}/{asset}_optimization_sharpe-ratio.html")
-    del elr_volume, sharpe_volume
+        elr_volume = dropnan(port.expected_log_returns()).vbt.volume(title=f"{asset}'s Expected Log Return").show()
+        sharpe_volume = dropnan(port.sharpe_ratio()).vbt.volume(title=f"{asset}'s Sharpe Ratio").show()
+    del port
+    gc.collect()
     print(f"Done plotting {asset}")
+
+del mkt_bands_ind
 gc.collect()
 
 
@@ -252,15 +248,18 @@ out_volume = out_windows.xs('Volume', level='value', axis=1)
 lr_ind = LR.run(out_close)
 wlr_ind = WLR.run(out_volume, lr_ind.lr)
 mkt_lr = wlr_ind.wlr.sum(axis=1, level="split_idx", skipna=False)
-del out_windows, wlr_in
-gc.collect()
-
-
-# In[ ]:
-
-
-# para cada activo de los que me interesa tradear simulo el resultado de ser corrido con los parámetros optimizados
+_lrs = {}
+_close = {}
 for asset in test_asset_list:
+    _lrs[asset] = lr_ind.lr.xs(asset, level='symbol', axis=1)
+    _close[asset] = out_close.xs(asset, level='symbol', axis=1)
+    print(f"Done separating close and lrs for {asset}")
+del out_close, lr_ind, out_windows, wlr_ind
+out_close = _close
+out_lrs = _lrs
+gc.collect()
+for asset in test_asset_list:
+    # para cada activo de los que me interesa tradear simulo el resultado de ser corrido con los parámetros optimizados
     in_best_pairs = np.array(in_best_fltr_pairs[asset])
     upper_fltr = in_best_pairs[:,0]
     lower_fltr = in_best_pairs[:,1]
@@ -268,15 +267,16 @@ for asset in test_asset_list:
                         per_column=True,
                         param_product=False,
                         short_name="mkt")
-    lr = lr_ind.lr.xs(asset, level='symbol', axis=1)
-    close = out_close.xs(asset, level='symbol', axis=1)
+    lr = out_lrs[asset]
+    close = out_close[asset]
     entries =  mkt_bands_ind.filtered_above(lr, crossover=True)
     exits = mkt_bands_ind.filtered_below(lr, crossover=True)
+    del lr, out_lrs[asset], mkt_bands_ind
     port = ExtendedPortfolio.from_signals(close, entries, exits, **portfolio_kwargs, max_logs=0)
     exp_plot = port.expected_log_returns().vbt.plot(title=f"{asset}'s Expected Log Return")
     sharpe_plot = port.sharpe_ratio().vbt.plot(title=f"{asset}'s Sharpe ratio")
     if is_notebook():
-        exp_plot().show()
+        exp_plot.show()
         sharpe_plot.show()
     else:
         exp_plot.write_html(f"{current_dir}/{asset}_simulation_exp_log_ret.html")
@@ -318,10 +318,4 @@ assert (np.allclose(exp_thon_wlr, _test_wlrInd.wlr["Thon"], equal_nan=True))
 _test_mkt_lr = _test_wlrInd.wlr.sum(axis=1, skipna=False)
 exp_mkt_lr = exp_py_wlr + exp_thon_wlr
 assert (np.allclose(exp_mkt_lr,_test_mkt_lr, equal_nan=True))
-
-
-# In[ ]:
-
-
-
 
