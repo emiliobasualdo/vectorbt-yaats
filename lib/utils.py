@@ -4,10 +4,16 @@ from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
+import vectorbt as vbt
 from numba import njit
 from numpy import log, nanmean
 from vectorbt import Portfolio
+from vectorbt.generic.nb import diff_nb
 from vectorbt.utils.decorators import custom_method
+
+
+def dropnan(s):
+    return s[~np.isnan(s)]
 
 
 class ExtendedPortfolio(Portfolio):
@@ -17,13 +23,25 @@ class ExtendedPortfolio(Portfolio):
 
         @njit
         def log_nb(col, pnl):
-            pnl = pnl[~np.isnan(pnl)]
+            # pnl = pnl[~np.isnan(pnl)]
             return log(pnl / 100 + 1)
 
         # log_nb = njit(lambda col, pnl: log(pnl/100 + 1))
         mean_nb = njit(lambda col, l_rets: nanmean(l_rets))
         return self.trades.pnl.to_matrix().vbt.apply_and_reduce(log_nb, mean_nb,
                                                                 wrap_kwargs=dict(name_or_index="expected_log_returns"))
+
+
+@njit
+def lr_nb(price_series):
+    c_log = np.log(price_series)
+    return diff_nb(c_log)
+
+
+LR = vbt.IndicatorFactory(
+    input_names=['price_series'],
+    output_names=['lr']
+).from_apply_func(lr_nb, use_ray=True)
 
 
 def is_notebook():
@@ -100,3 +118,33 @@ def resample_ohlcv(df, new_frequency, columns=None):
 
     apply_dict = {k: ohlc_dict[k] for k in columns}
     return df.resample(new_frequency, closed='left', label='left').apply(apply_dict)
+
+
+def where_true_set_series(series, data):
+    data = data.copy()
+    if not isinstance(data, pd.DataFrame):
+        data = pd.Series(data, index=data.index, copy=True)
+    data.where(data == True, np.nan, inplace=True)
+    data.where(data != 1, series, inplace=True)
+    return data
+
+
+def plot_series_vs_scatters(series_list: list, booleans_list):
+    series = series_list.pop()
+    fig = series.vbt.plot()
+    while len(series_list):
+        series = series_list.pop()
+        fig = series.vbt.plot(fig=fig)
+    i = 1
+    for scatter in booleans_list:
+        scatter = where_true_set_series(series, scatter)
+        scatter.name = i
+        i += 1
+        fig = scatter.vbt.scatterplot(fig=fig)
+    return fig
+
+
+def dropnaninf(performance):
+    if isinstance(performance, float):
+        return performance
+    return performance[~performance.isin([np.nan, np.inf, -np.inf])]
