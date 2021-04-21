@@ -122,21 +122,28 @@ def resample_ohlcv(df, new_frequency, columns=None):
 
 def where_true_set_series(series, data):
     data = data.copy()
-    if not isinstance(data, pd.DataFrame):
-        data = pd.Series(data, index=data.index, copy=True)
     data.where(data == True, np.nan, inplace=True)
     data.where(data != 1, series, inplace=True)
     return data
 
 
 def plot_series_vs_scatters(series_list: list, booleans_list):
-    series = series_list.pop()
+    index = None
+    series = series_list.pop(0)
     fig = series.vbt.plot()
     while len(series_list):
-        series = series_list.pop()
+        series = series_list.pop(0)
+        if not isinstance(series, pd.Series):
+            series = pd.Series(series, index=index, copy=True)
+        elif index is None:
+            index = series.index
         fig = series.vbt.plot(fig=fig)
     i = 1
     for scatter in booleans_list:
+        if not isinstance(scatter, pd.Series):
+            scatter = pd.Series(scatter, index=index, copy=True)
+        elif index is None:
+            index = series.index
         scatter = where_true_set_series(series, scatter)
         scatter.name = i
         i += 1
