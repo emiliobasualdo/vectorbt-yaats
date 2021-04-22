@@ -31,7 +31,6 @@ class ExtendedPortfolio(Portfolio):
         return self.trades.pnl.to_matrix().vbt.apply_and_reduce(log_nb, mean_nb,
                                                                 wrap_kwargs=dict(name_or_index="expected_log_returns"))
 
-
 @njit
 def lr_nb(price_series):
     c_log = np.log(price_series)
