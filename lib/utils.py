@@ -36,7 +36,6 @@ def lr_nb(price_series):
     c_log = np.log(price_series)
     return diff_nb(c_log)
 
-
 LR = vbt.IndicatorFactory(
     input_names=['price_series'],
     output_names=['lr']
@@ -59,7 +58,6 @@ def file_to_data_frame(filepath) -> (str, pd.DataFrame):
     if not df.index.is_monotonic_increasing:
         df.sort_index(inplace=True)
     return symbol, df
-
 
 def directory_to_data_frame_list(directory) -> List[Tuple[str, pd.DataFrame]]:
     series = []
@@ -94,7 +92,6 @@ def get_best_index(performance, higher_better=True):
 def get_params_by_index(index, level_name):
     return index.get_level_values(level_name).to_numpy()
 
-
 def get_best_pairs(performance, param_1_name, param_2_name, return_index=False):
     in_best_index = get_best_index(performance)
     in_best_param1 = get_params_by_index(in_best_index, param_1_name)
@@ -103,7 +100,7 @@ def get_best_pairs(performance, param_1_name, param_2_name, return_index=False):
         return in_best_index, np.array(list(zip(in_best_param1, in_best_param2)))
     return np.array(list(zip(in_best_param1, in_best_param2)))
 
-
+@njit
 def resample_ohlcv(df, new_frequency, columns=None):
     ohlc_dict = {
         'Open': 'first',
@@ -149,8 +146,22 @@ def plot_series_vs_scatters(series_list: list, booleans_list):
         fig = scatter.vbt.scatterplot(fig=fig)
     return fig
 
-
+@njit
 def dropnaninf(performance):
     if isinstance(performance, float):
         return performance
     return performance[~performance.isin([np.nan, np.inf, -np.inf])]
+
+# preallocate empty array and assign slice by chrisaycock
+@njit
+def shift_np(arr, num, fill_value=np.nan):
+    result = np.empty_like(arr)
+    if num > 0:
+        result[:num] = fill_value
+        result[num:] = arr[:-num]
+    elif num < 0:
+        result[num:] = fill_value
+        result[:num] = arr[-num:]
+    else:
+        result[:] = arr
+    return result
