@@ -1,3 +1,4 @@
+import math
 from math import floor
 from pathlib import Path
 from typing import List, Tuple
@@ -146,7 +147,6 @@ def plot_series_vs_scatters(series_list: list, booleans_list):
         fig = scatter.vbt.scatterplot(fig=fig)
     return fig
 
-@njit
 def dropnaninf(performance):
     if isinstance(performance, float):
         return performance
@@ -165,3 +165,79 @@ def shift_np(arr, num, fill_value=np.nan):
     else:
         result[:] = arr
     return result
+
+@njit
+def positive_return_prob(col, arr, *args):
+    indexes = np.where(np.isfinite(arr))[0]
+    close = args[0]
+    fee = args[1]
+    min_trades = args[2]
+    n = 1
+    adder = 0
+    counter = 0
+    while n < len(indexes):
+        i = indexes[n]
+        prev = indexes[n-1]
+        #if entry then exit
+        if arr[prev] == 1 and arr[i] == -1:
+            # if positive return
+            if (close[i]/close[prev]) * (1 - fee)**2 > 1:
+                adder += 1
+            counter += 1
+        n += 1
+    return adder / counter if counter > min_trades else np.nan
+
+@njit
+def trades_count(col, arr):
+    indexes = np.where(np.isfinite(arr))[0]
+    n = 1
+    counter = 0
+    while n < len(indexes):
+        i = indexes[n]
+        prev = indexes[n-1]
+        if arr[prev] == 1 and arr[i] == -1:
+            counter += 1
+        n +=1
+    return counter
+
+@njit
+def k_mean(col, arr, *args):
+    indexes = np.where(np.isfinite(arr))[0]
+    close = args[0]
+    fee = args[1]
+    min_trades = args[2]
+    n = 1
+    adder = 0
+    counter = 0
+    while n < len(indexes):
+        i = indexes[n]
+        prev = indexes[n-1]
+        if arr[prev] == 1 and arr[i] == -1:
+            adder += math.log(close[i]/close[prev] * (1 - fee)**2)
+            counter += 1
+        n +=1
+    return adder / counter if counter > min_trades else np.nan
+
+@njit
+def median(col, arr, *args):
+    indexes = np.where(np.isfinite(arr))[0]
+    close = args[0]
+    fee = args[1]
+    min_trades = args[2]
+    n = 1
+    adder = 0
+    counter = 0
+    while n < len(indexes):
+        i = indexes[n]
+        prev = indexes[n-1]
+        if arr[prev] == 1 and arr[i] == -1:
+            adder += math.log(close[i]/close[prev] * (1 - fee)**2)
+            counter += 1
+        n +=1
+    return adder / counter if counter > min_trades else np.nan
+
+def signals_to_ones(entries, exits, columns=None):
+    if columns is None:
+        columns = entries.columns
+    entries = np.where(entries == True, 1, np.nan)
+    return pd.DataFrame(np.where(exits == True, -1, entries), columns=columns)
