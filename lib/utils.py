@@ -1,4 +1,7 @@
+import logging
 import math
+import time
+from datetime import timedelta
 from math import floor
 from pathlib import Path
 from typing import List, Tuple
@@ -7,30 +10,58 @@ import numpy as np
 import pandas as pd
 import vectorbt as vbt
 from numba import njit
-from numpy import log, nanmean
-from vectorbt import Portfolio
+from vectorbt import Portfolio, Trades
 from vectorbt.generic.nb import diff_nb
-from vectorbt.utils.decorators import custom_method
+from vectorbt.utils.decorators import cached_property, cached_method
 
 
 def dropnan(s):
     return s[~np.isnan(s)]
 
+def dropnaninf(s):
+    if isinstance(s, float):
+        return s
+    return s[~s.isin([np.nan, np.inf, -np.inf])]
+
+class ExtendedTrades(Trades):
+    @cached_property
+    def lr(self):
+        @njit
+        def log_nb(col, net_rets):
+            return np.log(net_rets + 1)
+        return self.returns.to_matrix().vbt.apply_along_axis(log_nb, axis=0).vbt.to_mapped_array()
+
+    @cached_method
+    def expected_log_returns(self, min_trades=0, min_lr=None):
+        if min_lr is not None:
+            # log(net_ret + 1) >=  min_lr
+            #    net_ret + 1   >=  e^min_lr
+            #      net_ret     >=  e^min_lr - 1
+            filter_mask = self.values['return'] >= math.e**min_lr - 1
+            trades = self.filter_by_mask(filter_mask)
+        else:
+            trades = self
+
+        if min_trades > 0:
+            filter_mask = trades.count() >= min_trades
+            trades = trades[filter_mask]
+
+        return trades.lr.mean()
+
+    @cached_method
+    def median_log_returns(self, min_trades=0):
+        trades = self
+        if min_trades > 0:
+            filter_mask = trades.count() >= min_trades
+            trades = trades[filter_mask]
+
+        return trades.lr.median()
 
 class ExtendedPortfolio(Portfolio):
-    @custom_method
-    def expected_log_returns(self):
-        """Get log return mean per column/group based on portfolio value."""
-
-        @njit
-        def log_nb(col, net_ret):
-            # pnl = pnl[~np.isnan(pnl)]
-            return log(net_ret + 1)
-
-        # log_nb = njit(lambda col, pnl: log(pnl/100 + 1))
-        mean_nb = njit(lambda col, l_rets: nanmean(l_rets))
-        return self.trades.returns.to_matrix().vbt.apply_and_reduce(log_nb, mean_nb,
-                                                                wrap_kwargs=dict(name_or_index="expected_log_returns"))
+    @cached_property
+    def trades(self) -> ExtendedTrades:
+        """`Portfolio.get_trades` with default arguments."""
+        return ExtendedTrades.from_orders(self.orders)
 
 @njit
 def lr_nb(price_series):
@@ -42,13 +73,13 @@ LR = vbt.IndicatorFactory(
     output_names=['lr']
 ).from_apply_func(lr_nb, use_ray=True)
 
-
 def is_notebook():
     import __main__ as main
     return not hasattr(main, '__file__')
 
-
-def file_to_data_frame(filepath) -> (str, pd.DataFrame):
+def ohlcv_csv_to_df(filepath) -> (str, pd.DataFrame):
+    # Se asume que las columnas del CSV están en formato: "Open", "High",..., "Volume USDT", "Volume XXX"
+    # No importa el orden de las columnas
     df = pd.read_csv(filepath, index_col=1, parse_dates=True, infer_datetime_format=True)
     symbol = df.iloc[-1]["symbol"][:-5]
     df.drop(columns=['unix', 'symbol'], inplace=True)
@@ -64,9 +95,8 @@ def directory_to_data_frame_list(directory) -> List[Tuple[str, pd.DataFrame]]:
     series = []
     path_list = list(Path(directory).glob('*.csv'))
     for path in path_list:
-        series.append(file_to_data_frame(path))
+        series.append(ohlcv_csv_to_df(path))
     return series
-
 
 def create_windows(ohlc: pd.Series, n=5, window_len=0.6, right_set_len=0.4) -> ((), ()):
     split_kwargs = dict(
@@ -83,12 +113,10 @@ def create_windows(ohlc: pd.Series, n=5, window_len=0.6, right_set_len=0.4) -> (
     fig = ohlc.vbt.rolling_split(**split_kwargs)
     return fig, windows
 
-
 def get_best_index(performance, higher_better=True):
     if higher_better:
         return performance[performance.groupby('split_idx').idxmax()].index
     return performance[performance.groupby('split_idx').idxmin()].index
-
 
 def get_params_by_index(index, level_name):
     return index.get_level_values(level_name).to_numpy()
@@ -116,13 +144,11 @@ def resample_ohlcv(df, new_frequency, columns=None):
     apply_dict = {k: ohlc_dict[k] for k in columns}
     return df.resample(new_frequency, closed='left', label='left').apply(apply_dict)
 
-
 def where_true_set_series(series, data):
     data = data.copy()
     data.where(data == True, np.nan, inplace=True)
     data.where(data != 1, series, inplace=True)
     return data
-
 
 def plot_series_vs_scatters(series_list: list, booleans_list):
     index = None
@@ -146,11 +172,6 @@ def plot_series_vs_scatters(series_list: list, booleans_list):
         i += 1
         fig = scatter.vbt.scatterplot(fig=fig)
     return fig
-
-def dropnaninf(performance):
-    if isinstance(performance, float):
-        return performance
-    return performance[~performance.isin([np.nan, np.inf, -np.inf])]
 
 # preallocate empty array and assign slice by chrisaycock
 @njit
@@ -218,26 +239,36 @@ def k_mean(col, arr, *args):
         n +=1
     return adder / counter if counter > min_trades else np.nan
 
-@njit
-def median(col, arr, *args):
-    indexes = np.where(np.isfinite(arr))[0]
-    close = args[0]
-    fee = args[1]
-    min_trades = args[2]
-    n = 1
-    adder = 0
-    counter = 0
-    while n < len(indexes):
-        i = indexes[n]
-        prev = indexes[n-1]
-        if arr[prev] == 1 and arr[i] == -1:
-            adder += math.log(close[i]/close[prev] * (1 - fee)**2)
-            counter += 1
-        n +=1
-    return adder / counter if counter > min_trades else np.nan
-
 def signals_to_ones(entries, exits, columns=None):
     if columns is None:
         columns = entries.columns
     entries = np.where(entries == True, 1, np.nan)
     return pd.DataFrame(np.where(exits == True, -1, entries), columns=columns)
+
+class ElapsedFormatter(logging.Formatter):
+    def __init__(self):
+        super().__init__()
+        self.last_time = time.time()
+
+    def format(self, record):
+        elapsed_seconds = record.created - self.last_time
+        self.last_time = time.time()
+        # using timedelta here for convenient default formatting
+        elapsed = timedelta(seconds=elapsed_seconds)
+        return "{} {}".format(elapsed, record.getMessage())
+
+
+# def test():
+#     e_all_signals_in_ones = np.array([[np.nan],[np.nan],[np.nan],[1],[np.nan],[-1],[np.nan],[1],[1],[np.nan],[np.nan]])
+#     all_signals_in_ones = signals_to_ones(final_entries, lr_exits, columns=[(lag, thld)])
+#     assert (np.array_equal(all_signals_in_ones, e_all_signals_in_ones, equal_nan=True))
+#
+#     e_trade_count = 1
+#     e_positive_return = 1
+#     e_avg_lr = math.log(math.e**4/math.e**3)
+#     avg_lr = k_mean("", all_signals_in_ones.to_numpy().flatten(), p.flatten())
+#     positive_return = positive_return_prob("", all_signals_in_ones.to_numpy().flatten(), p.flatten(), fee)
+#     trade_count = trades_count("", all_signals_in_ones.to_numpy().flatten())
+#     assert (avg_lr == e_avg_lr)
+#     assert (positive_return == e_positive_return)
+#     assert (trade_count == e_trade_count)

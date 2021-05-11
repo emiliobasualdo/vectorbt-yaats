@@ -14,7 +14,7 @@ if module_path not in sys.path:
     sys.path.append(module_path)
 from numba import njit
 import numpy as np
-from lib.utils import create_windows, file_to_data_frame, ExtendedPortfolio
+from lib.utils import create_windows, ohlcv_csv_to_df, ExtendedPortfolio
 import pandas as pd
 import vectorbt as vbt
 from vectorbt.utils.config import merge_dicts
@@ -24,7 +24,7 @@ from vectorbt.utils.config import merge_dicts
 
 
 # leemos el csv
-(s_name, ohlcv) = file_to_data_frame(
+(s_name, ohlcv) = ohlcv_csv_to_df(
     "../../Binance_ADAUSDT_minute.csv")
 # agarramos solo las columnas que necesitamos
 cols = ohlcv.columns
