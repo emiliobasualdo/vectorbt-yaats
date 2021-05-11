@@ -13,6 +13,7 @@ import json
 import logging
 from numba import njit
 from plotly.subplots import make_subplots
+from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
 
 module_path = os.path.abspath(os.path.join('../..'))
@@ -102,28 +103,40 @@ def create_portfolio(file, fee, lr_thld, vol_thld, lag) -> ExtendedPortfolio:
         freq='m',
         size=np.inf,  # Se compra y vende toda la caja en cada operación.
         fees=fee,
+        max_logs=0,
     )
     del volume, lr_ind
     logging.info('Simulating portfolio')
-    port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs, max_logs=0)
+    gc.collect()
+    # solo cacheamos los trades
+    vbt.settings.caching['blacklist'].append('Portfolio')
+    vbt.settings.caching['whitelist'].extend(['Portfolio.trades'])
+    port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
     del close, signals
     return port
 
 
-def plots_from_trades(trades, min_trades=500, min_lr=0.0, save_dir=None, parameters_to_save=None):
+def plots_from_trades(trades_lr: MappedArray, min_trades=500, min_lr=0.0, save_dir=None, parameters_to_save=None):
     gc.collect()
     results = []
     logging.info('Creating results')
+    # primero filtramos todas aquellas corridas que tengan menos de min_trades
+    trades_lr: MappedArray = trades_lr[trades_lr.count() >= min_trades]
     # ploteamos elr donde # trades >= min_Trades y elr > 0
-    elr = trades.expected_log_returns(min_trades=min_trades)
+    elr = trades_lr.mean()
     results.append({
         "data": dropnan(elr[elr > 0]),
         "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), AVG > 0, #Trades > {min_trades}",
         "name": "ELR"
     })
 
+    # filtramos los lr que sean > min_lr
     # ploteamos elr donde lr > 0 la media se toma como la suma  (lr > 0) / (#lr>0)), # trades >= min_Trades y elr > 0
-    elr_filtered = trades.expected_log_returns(min_trades=min_trades, min_lr=min_lr)
+    @njit
+    def func(col, arr, *args):
+        arr = arr[arr > min_lr]
+        return arr.sum() / arr.size if arr.size > 0 else np.nan
+    elr_filtered = trades_lr.reduce(func)
     results.append({
         "data": dropnan(elr_filtered[elr_filtered > 0]),
         "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), log(...) > 0, AVG > 0, #Trades > {min_trades}",
@@ -131,13 +144,21 @@ def plots_from_trades(trades, min_trades=500, min_lr=0.0, save_dir=None, paramet
     })
 
     # ploteamos media donde # trades >= min_Trades y mlr > 0
-    mlr = trades.median_log_returns(min_trades=min_trades)
+    mlr = trades_lr.median()
     results.append({
         "data": dropnan(mlr[mlr > 0]),
         "title": f"Median(log(p_exit/p_entry * (1-fee)**2)), Median > 0, #Trades > {min_trades}",
         "name": "MLR"
     })
-    del trades
+    # ploteamos # trades > min_trades
+    trade_count = trades_lr.count()
+    results.append({
+        "data": dropnan(trade_count[trade_count > min_trades]),
+        "title": f"#Trades > {min_trades}",
+        "name": "Trade_count"
+    })
+
+    del trades_lr
     if save_dir is not None:
         logging.info('Saving parameters')
         # create or replace dir if exists
@@ -156,17 +177,19 @@ def plots_from_trades(trades, min_trades=500, min_lr=0.0, save_dir=None, paramet
         logging.info('Saving volumes and heatmaps')
         # todo paralelizar
         for i in range(len(results)):
-            if results[i]["data"].size:
-                # guardamos los gráficos 3d
-                filepath = f"{save_dir}/{plot_counter}-{results[i]['name']}_volume.html"
-                results[i]["data"].vbt.volume(title=results[i]["title"]).write_html(filepath)
+            if not results[i]["data"].size:
+                logging.info(f"Empty results for {results[i]['name']}")
+                continue
+            # guardamos los gráficos 3d
+            filepath = f"{save_dir}/{plot_counter}-{results[i]['name']}_volume.html"
+            results[i]["data"].vbt.volume(title=results[i]["title"]).write_html(filepath)
 
-                # guardamos Plots 2d de la optimización lag , lr_thld ,vol_thld con lag como slider
-                filepath = f"{save_dir}/{plot_counter}-{results[i]['name']}_heatmap.html"
-                results[i]["data"].vbt.heatmap(title=results[i]["title"], slider_level='signals_lag').write_html(
-                    filepath)
+            # guardamos Plots 2d de la optimización lag , lr_thld ,vol_thld con lag como slider
+            filepath = f"{save_dir}/{plot_counter}-{results[i]['name']}_heatmap.html"
+            results[i]["data"].vbt.heatmap(title=results[i]["title"], slider_level='signals_lag').write_html(
+                filepath)
 
-                plot_counter += 1
+            plot_counter += 1
 
         logging.info('Saving results as csv')
         # guardamos los top 20 resultados unique en una tabla csv
@@ -203,7 +226,7 @@ if __name__ == '__main__':
     fee = 0.001
 
     port = create_portfolio(filepath, fee, lr_thld, vol_thld, lag)
-    trades = port.trades
+    trades_lrs = port.trades.lr
     del port
 
     min_lr = 0.0
@@ -214,10 +237,10 @@ if __name__ == '__main__':
         "lag": f"range({lag[0]},{lag[-1]}, steps={len(lag)})",
         "fee": fee,
         "min_trades": min_trades,
-        "min_lr = 0.0": min_lr
+        "min_lr": min_lr
     }
     _, filename = os.path.split(filepath)
 
     save_dir = f"./{filename[:-4]}"
-    plots_from_trades(trades, min_trades=min_trades, min_lr=min_lr, save_dir=save_dir,
+    plots_from_trades(trades_lrs, min_trades=min_trades, min_lr=min_lr, save_dir=save_dir,
                       parameters_to_save=parameters_to_save)

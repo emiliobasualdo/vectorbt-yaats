@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import vectorbt as vbt
 from numba import njit
-from vectorbt import Portfolio, Trades
+from vectorbt import Portfolio, Trades, MappedArray
 from vectorbt.generic.nb import diff_nb
 from vectorbt.utils.decorators import cached_property, cached_method
 
@@ -25,11 +25,16 @@ def dropnaninf(s):
 
 class ExtendedTrades(Trades):
     @cached_property
-    def lr(self):
+    def lr(self) -> MappedArray:
+        # @njit
+        # def log_nb(col, net_rets):
+        #     return np.log(net_rets + 1)
+        # return self.returns.to_matrix().vbt.apply_along_axis(log_nb, axis=0).vbt.to_mapped_array()
         @njit
-        def log_nb(col, net_rets):
-            return np.log(net_rets + 1)
-        return self.returns.to_matrix().vbt.apply_along_axis(log_nb, axis=0).vbt.to_mapped_array()
+        def map_nb(record, *args):
+            # en la posición 10 está el net return
+            return np.log(record['return'] + 1)
+        return self.map(map_nb)
 
     @cached_method
     def expected_log_returns(self, min_trades=0, min_lr=None):

@@ -1,3 +1,4 @@
+import logging
 import math
 import numpy as np
 import pandas as pd
@@ -7,22 +8,40 @@ from strategies.SellOff.SellOff import signals_nb, signal_calculations, ma_mstd
 
 ####### Debugging #######
 if __name__ == '__main__':
-    start = '2019-01-01 UTC'  # crypto is in UTC
-    end = '2020-01-01 UTC'
+    start = '2014-01-01 UTC'  # crypto is in UTC
+    end = '2021-01-01 UTC'
     btc_price = vbt.YFData.download('BTC-USD', start=start, end=end).get('Close')
-    fast_ma = vbt.MA.run(btc_price, [10, 20], short_name='fast')
-    slow_ma = vbt.MA.run(btc_price, [20, 30], short_name='slow')
-    dummy_ma = vbt.MA.run(btc_price, [50, 60], short_name='dummy')
+    fast_ma = vbt.MA.run(btc_price, [2, 3], short_name='fast')
+    slow_ma = vbt.MA.run(btc_price, [3, 4], short_name='slow')
+    dummy_ma = vbt.MA.run(btc_price, [4, 5], short_name='dummy')
     entries = fast_ma.ma_above(slow_ma, crossover=True)
     exits_1 = fast_ma.ma_below(slow_ma, crossover=True)
     exits_2 = fast_ma.ma_below(dummy_ma, crossover=True)
     exits = exits_1 | exits_2
 
     port = ExtendedPortfolio.from_signals(btc_price, entries, exits)
-    elr = port.trades.expected_log_returns()
+    from numba import njit
+
+    @njit
+    def map_nb(record, *args):
+        # en la posición 10 está el net return
+        return np.log(record['return'] +1)
+
+    logging.getLogger().setLevel(logging.DEBUG)
+    import time
+    start = time.process_time()
+    a = port.trades.map(map_nb)
+    print(time.process_time() - start)
+    start = time.process_time()
+    b =  port.trades.lr
+    print(time.process_time() - start)
+    assert a.to_matrix().equals(b.to_matrix())
+    elr = port.trades.expected_log_returns(min_trades=100)
     mrl = port.trades.median_log_returns()
 
-    itsct = pd.merge(elr, mrl, how='inner', on=['S', 'T'])
+    itsct = pd.merge(elr, mrl, how='inner')
+    elr.index.intersection(mrl.index).size
+
 
 
 ####### TESTING #######
@@ -32,7 +51,6 @@ def test():
     v = np.array([[5.], [6.], [6.], [3.], [2.], [4.], [7.], [8.], [6.], [5.], [4.]])
     shifted_vol = shift_np(v, 1)
     e_shifted_vol_ma = np.array([[np.nan], [np.nan], [5.5], [6.], [4.5], [2.5], [3.], [5.5], [7.5], [7.], [5.5]])
-    e_shifted_vol_mstd = np.array([[np.nan], [np.nan], [np.nan], [0.5], [0.], [1.5], [0.5], [1.], [1.5], [0.5], [1.]])
     e_lr = np.array([[np.nan], [1], [0], [-3], [-1], [2], [3], [1], [-2], [-1], [-1]])
     e_shifted_lr = np.array([[np.nan], [np.nan], [1], [0], [-3], [-1], [2], [3], [1], [-2], [-1]])
     e_lr_ma = np.array(
@@ -65,7 +83,9 @@ def test():
         fees=0.001,
     )
     port = ExtendedPortfolio.from_signals(p, e_final_entries, lr_exits, **_portfolio_kwargs)
-    e_elr = (np.log(-0.63348844 + 1) + np.log(-0.98270268 + 1)) / 2
+    e_lrs = np.array([np.log(-0.63348844 + 1), np.log(-0.98270268 + 1)])
+    assert (np.isclose(e_lrs, port.trades.lr.values, equal_nan=True).all())
+    e_elr = e_lrs.mean()
     assert (np.isclose(e_elr, port.trades.expected_log_returns()[0], equal_nan=True))
     e_mlr = (np.log(-0.63348844 + 1) + np.log(-0.98270268 + 1)) / 2
     assert (np.isclose(e_mlr, port.trades.median_log_returns()[0], equal_nan=True))
