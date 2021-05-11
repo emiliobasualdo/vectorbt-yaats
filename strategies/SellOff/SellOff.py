@@ -1,3 +1,4 @@
+import argparse
 import gc
 import shutil
 from datetime import timedelta
@@ -180,30 +181,29 @@ def plots_from_trades(trades, min_trades=500, min_lr=0.0, save_dir=None, paramet
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Simulate Sell Off.')
+    parser.add_argument('ohlcv_csv')
+    args = parser.parse_args()
     # add custom formatter to root logger for simple demonstration
     handler = logging.StreamHandler()
     handler.setFormatter(ElapsedFormatter())
     logging.getLogger().addHandler(handler)
     logging.getLogger().setLevel(logging.INFO)
     # vbt.settings.caching['enabled'] = False
-    symbol = "ADA"
-    candles = "_3000"
-    file = f"/Users/pilo/development/itba/pf/Binance_Minute_OHLC_CSVs/{candles[1:]}/Binance_{symbol}USDT_minute{candles}.csv"
+    filepath = args.ohlcv_csv
 
     lr_thld = -np.linspace(0, 3, 30, endpoint=True)
     vol_thld = np.linspace(0, 4, 30, endpoint=True)
     lag = list(range(6, 100, 2))
     fee = 0.001
 
-    port = create_portfolio(file, fee, lr_thld, vol_thld, lag)
+    port = create_portfolio(filepath, fee, lr_thld, vol_thld, lag)
     trades = port.trades
     del port
     min_trades = 5
     min_lr = 0.0
     parameters_to_save = {
-        "symbol": symbol,
-        "candels": candles,
-        "file": file,
+        "filepath": filepath,
         "lr_thld": f"range({lr_thld[0]},{lr_thld[-1]}, steps={len(lr_thld)})",
         "vol_thld": f"range({vol_thld[0]},{vol_thld[-1]}, steps={len(vol_thld)})",
         "lag": f"range({lag[0]},{lag[-1]}, steps={len(lag)})",
@@ -211,6 +211,8 @@ if __name__ == '__main__':
         "min_trades": min_trades,
         "min_lr = 0.0": min_lr
     }
-    save_dir = f"./{symbol}{candles}"
+    _, filename = os.path.split(filepath)
+
+    save_dir = f"./{filename[:-4]}"
     plots_from_trades(trades, min_trades=min_trades, min_lr=min_lr, save_dir=save_dir,
                       parameters_to_save=parameters_to_save)
