@@ -167,10 +167,16 @@ def plots_from_trades(trades, min_trades=500, min_lr=0.0, save_dir=None, paramet
                 plot_counter += 1
 
         logging.info('Saving results as csv')
-        # guardamos las tablas de los top resultados en 1 csv
+        # guardamos los top 20 resultados unique en una tabla csv
+        csv_string = ""
+        for i in range(len(results)):
+            df = results[i]["data"]
+            name = results[i]['name']
+            csv_string = csv_string + f"\n{name}\n{df.nlargest(20, keep='all').to_csv()}"
         csv_filepath = f"{save_dir}/{plot_counter}-nlargest_results.csv"
         plot_counter += 1
-        pd.concat(list(map(lambda df: df['data'].nlargest(20), results))).to_csv(csv_filepath)
+        with open(csv_filepath, 'w') as writer:
+            writer.write(csv_string)
 
 
 if __name__ == '__main__':

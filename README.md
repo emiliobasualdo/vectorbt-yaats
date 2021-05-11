@@ -1,12 +1,16 @@
 # Yet another algorithmic trading study
 
 Arrancar leyendo el código por `strategies/SellOff/SellOff.py`
-
+## Setup
+Using Python 3.7.10, should work with >= 3.7.10
+```
+source venv/bin/activate
+```
 ### Install requirements
 ```
-install -r requirements.txt
+pip install -r requirements.txt
 ```
-### Create requirments
+### Create requirements.txt
 ```
 pip freeze > requirements. txt
 ```
