@@ -17,5 +17,5 @@ pip freeze > requirements. txt
 ### Run
 ```
 cd strategies/SellOff
-python SellOff.py
+python SellOff.py -m 500 /Users/pilo/development/itba/pf/Binance_Minute_OHLC_CSVs/3000/Binance_BNBUSDT_minute_3000.csv
 ```

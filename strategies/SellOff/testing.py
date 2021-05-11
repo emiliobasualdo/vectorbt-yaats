@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import pandas as pd
 import vectorbt as vbt
 from lib.utils import LR, ExtendedPortfolio, shift_np
 from strategies.SellOff.SellOff import signals_nb, signal_calculations, ma_mstd
@@ -18,7 +19,10 @@ if __name__ == '__main__':
     exits = exits_1 | exits_2
 
     port = ExtendedPortfolio.from_signals(btc_price, entries, exits)
-    port.trades.median_log_returns().vbt.heatmap(slider_level='dummy_window').show()
+    elr = port.trades.expected_log_returns()
+    mrl = port.trades.median_log_returns()
+
+    itsct = pd.merge(elr, mrl, how='inner', on=['S', 'T'])
 
 
 ####### TESTING #######
