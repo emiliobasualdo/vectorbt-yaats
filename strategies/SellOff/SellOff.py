@@ -248,7 +248,7 @@ if __name__ == '__main__':
 
     min_lr = 0.0
     parameters_to_save = {
-        **args,
+        **vars(args),
         "lr_thld": f"range({lr_thld[0]},{lr_thld[-1]}, steps={len(lr_thld)})",
         "vol_thld": f"range({vol_thld[0]},{vol_thld[-1]}, steps={len(vol_thld)})",
         "lag": f"range({lag[0]},{lag[-1]}, steps={len(lag)})",
