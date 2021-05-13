@@ -104,8 +104,8 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size) -> [MappedAr
     )
     logging.info('Simulating portfolio')
     # solo cacheamos los trades
-    # vbt.settings.caching['blacklist'].append('Portfolio')
-    # vbt.settings.caching['whitelist'].extend(['Portfolio.trades'])
+    vbt.settings.caching['blacklist'].append('Portfolio')
+    vbt.settings.caching['whitelist'].extend(['Portfolio.trades'])
 
     # Corrermos simulaciones cada chunks de 8GB.
     # Partimos el lag para que forme chunks de 8GB. Obs: usamos float64 => 8 bytes
