@@ -111,9 +111,9 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size=8) -> [Mapped
     # Partimos el lag para que forme chunks de 8GB. Obs: usamos float64 => 8 bytes
     total_gbs = close.size * len(lr_thld) * len(vol_thld) * len(lag) * 8 / (1 << 30)
     logging.info(f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs,2)}GB')
-    lags_partition_len = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
-    lag_chunks = divide_chunks(lag, lags_partition_len)
-    logging.info(f'Chunks size={lags_partition_len}, count={len(lag_chunks)}')
+    lags_partition_size = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
+    lag_chunks = divide_chunks(lag, lags_partition_size)
+    logging.info(f'Chunks size={lags_partition_size}, count={len(lag_chunks)}, chunks={lag_chunks}')
     lrs: [MappedArray] = []
     for lag_partition in tqdm(lag_chunks):
         # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
