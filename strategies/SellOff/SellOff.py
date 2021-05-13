@@ -111,7 +111,7 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size=8) -> [Mapped
     # Corrermos simulaciones cada chunks de 8GB.
     # Partimos el lag para que forme chunks de 8GB. Obs: usamos float64 => 8 bytes
     # Total GBs = close.size * len(lr_thld) * len(vol_thld) *len(lag) * 8  / (1 << 30)
-    lags_partition_len = math.floor(MAX_CHUNK_SIZE * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8 ))
+    lags_partition_len = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8 ))
     lag_chunks = divide_chunks(lag, lags_partition_len)
     lrs: [MappedArray] = []
     for lag_partition in tqdm(lag_chunks):
@@ -248,12 +248,11 @@ if __name__ == '__main__':
 
     min_lr = 0.0
     parameters_to_save = {
-        "filepath": filepath,
+        **args,
         "lr_thld": f"range({lr_thld[0]},{lr_thld[-1]}, steps={len(lr_thld)})",
         "vol_thld": f"range({vol_thld[0]},{vol_thld[-1]}, steps={len(vol_thld)})",
         "lag": f"range({lag[0]},{lag[-1]}, steps={len(lag)})",
         "fee": fee,
-        "min_trades": min_trades,
         "min_lr": min_lr
     }
     _, filename = os.path.split(filepath)
