@@ -19,7 +19,6 @@ from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
 from tqdm import tqdm
 
-
 module_path = os.path.abspath(os.path.join('../..'))
 if module_path not in sys.path:
     sys.path.append(module_path)
@@ -92,7 +91,7 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size=8) -> [Mapped
     volume = ohlcv["Volume"]
     del ohlcv
 
-    logging.info('Creating indicators')
+    logging.info('Creating lr indicator')
     # Calculamos el log return de los precios(log return indicator)
     lr_ind = LR.run(close)
 
@@ -110,9 +109,11 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size=8) -> [Mapped
 
     # Corrermos simulaciones cada chunks de 8GB.
     # Partimos el lag para que forme chunks de 8GB. Obs: usamos float64 => 8 bytes
-    # Total GBs = close.size * len(lr_thld) * len(vol_thld) *len(lag) * 8  / (1 << 30)
-    lags_partition_len = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8 ))
+    total_gbs = close.size * len(lr_thld) * len(vol_thld) * len(lag) * 8 / (1 << 30)
+    logging.info(f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs,2)}GB')
+    lags_partition_len = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
     lag_chunks = divide_chunks(lag, lags_partition_len)
+    logging.info(f'Chunks size={lags_partition_len}, count={len(lag_chunks)}')
     lrs: [MappedArray] = []
     for lag_partition in tqdm(lag_chunks):
         # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
@@ -128,7 +129,7 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size=8) -> [Mapped
         del signals, port
         gc.collect()
 
-    #del volume, lr_ind, close
+    del volume, lr_ind, close
     return lrs
 
 
@@ -152,6 +153,7 @@ def plots_from_trades(trades_lr: [MappedArray], min_trades=500, min_lr=0.0, save
     def func(col, arr, *args):
         arr = arr[arr > min_lr]
         return arr.sum() / arr.size if arr.size > 0 else np.nan
+
     elr_filtered = pd.concat(map(lambda t_lr: t_lr.reduce(func), trades_lr))
     results.append({
         "data": dropnan(elr_filtered[elr_filtered > 0]),
