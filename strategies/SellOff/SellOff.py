@@ -68,7 +68,7 @@ ENTRY_SIGNALS = vbt.IndicatorFactory(
 ).from_apply_func(signals_nb, use_ray=True)
 
 
-def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size=8) -> [MappedArray]:
+def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size) -> [MappedArray]:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
     Acá no consideramos ni Stop Loss ni Take Profit.
@@ -231,7 +231,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     filepath = args.ohlcv_csv
     min_trades = args.min_trades
-    max_chunk_size = args.min_trades
+    max_chunk_size = args.max_chunk_size
 
     # add custom formatter to root logger for simple demonstration
     handler = logging.StreamHandler()
