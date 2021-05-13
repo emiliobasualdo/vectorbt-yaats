@@ -113,7 +113,7 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size) -> [MappedAr
     logging.info(f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs,2)}GB')
     lags_partition_size = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
     lag_chunks = divide_chunks(lag, lags_partition_size)
-    logging.info(f'Chunks size={lags_partition_size}, count={len(lag_chunks)}, chunks={lag_chunks}')
+    logging.info(f'Chunks size={lags_partition_size}, count={len(lag_chunks)}')
     lrs: [MappedArray] = []
     for lag_partition in tqdm(lag_chunks):
         # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
@@ -123,7 +123,9 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size) -> [MappedAr
                                     param_product=True, short_name="signals")
 
         port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
-        lrs.append(port.trades.lr)
+        # filtramos todas aquellas corridas que tengan menos de min_trades
+        lr = port.trades.lr
+        lrs.append(lr[lr.count() >= min_trades])
         # we will disable caching to release memory as soon as the calculation of portfolio performance is over:
         vbt.settings.caching['blacklist'].append(port)
         del signals, port
@@ -137,8 +139,7 @@ def plots_from_trades(trades_lr: [MappedArray], min_trades=500, min_lr=0.0, save
     gc.collect()
     results = []
     logging.info('Creating results')
-    # primero filtramos todas aquellas corridas que tengan menos de min_trades
-    trades_lr: [MappedArray] = list(map(lambda t_lr: t_lr[t_lr.count() >= min_trades], trades_lr))
+
     # ploteamos elr donde # trades >= min_Trades y elr > 0
     elr = pd.concat(map(lambda t_lr: t_lr.mean(), trades_lr))
     results.append({
