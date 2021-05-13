@@ -1,5 +1,6 @@
 import argparse
 import gc
+import glob
 import shutil
 from datetime import timedelta
 import time
@@ -114,7 +115,10 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size) -> [MappedAr
     lags_partition_size = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
     lag_chunks = divide_chunks(lag, lags_partition_size)
     logging.info(f'Chunks size={lags_partition_size}, count={len(lag_chunks)}')
-    lrs: [MappedArray] = []
+
+    # creamos un directorio temporal para guardar datos intermedios y liberar memoria
+    temp_dir = "/tmp/selloff"
+    os.mkdir(temp_dir)
     for lag_partition in tqdm(lag_chunks):
         # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
         signals = ENTRY_SIGNALS.run(lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
@@ -125,13 +129,19 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size) -> [MappedAr
         port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
         # filtramos todas aquellas corridas que tengan menos de min_trades
         lr = port.trades.lr
-        lrs.append(lr[lr.count() >= min_trades])
+        lr[lr.count() >= min_trades].save(f"{temp_dir}/{lag_partition[0]}.tmp")
         # we will disable caching to release memory as soon as the calculation of portfolio performance is over:
         vbt.settings.caching['blacklist'].append(port)
-        del signals, port
+        del signals, port, lr
         gc.collect()
 
     del volume, lr_ind, close
+    # levantamos todos los archivos temporales y borramos el directorio
+    os.chdir(temp_dir)
+    lrs: [MappedArray] = []
+    for file in glob.glob("*.tmp"):
+        lrs.append(vbt.MappedArray.load(file))
+    shutil.rmtree(temp_dir)
     return lrs
 
 
