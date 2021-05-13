@@ -3,6 +3,8 @@ import gc
 import shutil
 from datetime import timedelta
 import time
+
+import pandas
 import vectorbt as vbt
 import math
 import os
@@ -15,12 +17,14 @@ from numba import njit
 from plotly.subplots import make_subplots
 from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
+from tqdm import tqdm
+
 
 module_path = os.path.abspath(os.path.join('../..'))
 if module_path not in sys.path:
     sys.path.append(module_path)
 
-from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, dropnan
+from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, dropnan, divide_chunks
 
 
 @njit
@@ -65,7 +69,7 @@ ENTRY_SIGNALS = vbt.IndicatorFactory(
 ).from_apply_func(signals_nb, use_ray=True)
 
 
-def create_portfolio(file, fee, lr_thld, vol_thld, lag) -> ExtendedPortfolio:
+def simulate_lrs(file, fee, lr_thld, vol_thld, lag) -> [MappedArray]:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
     Acá no consideramos ni Stop Loss ni Take Profit.
@@ -80,6 +84,8 @@ def create_portfolio(file, fee, lr_thld, vol_thld, lag) -> ExtendedPortfolio:
     exit = LRS+[i]
     """
 
+    MAX_CHUNK_SIZE = 8  # 8GB
+
     # Levantamos un CSV
     logging.info('Loading ohlcv csv')
     _, ohlcv = ohlcv_csv_to_df(file)
@@ -92,12 +98,6 @@ def create_portfolio(file, fee, lr_thld, vol_thld, lag) -> ExtendedPortfolio:
     # Calculamos el log return de los precios(log return indicator)
     lr_ind = LR.run(close)
 
-    # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
-    signals = ENTRY_SIGNALS.run(lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
-                                vol=volume, shifted_vol=shift_np(volume.to_numpy(), 1),
-                                lr_thld=lr_thld, vol_thld=vol_thld, lag=lag,
-                                param_product=True, short_name="signals")
-
     portfolio_kwargs = dict(
         direction='longonly',  # Solo long, no se shortea
         freq='m',
@@ -105,25 +105,43 @@ def create_portfolio(file, fee, lr_thld, vol_thld, lag) -> ExtendedPortfolio:
         fees=fee,
         max_logs=0,
     )
-    del volume, lr_ind
     logging.info('Simulating portfolio')
-    gc.collect()
     # solo cacheamos los trades
-    vbt.settings.caching['blacklist'].append('Portfolio')
-    vbt.settings.caching['whitelist'].extend(['Portfolio.trades'])
-    port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
-    del close, signals
-    return port
+    # vbt.settings.caching['blacklist'].append('Portfolio')
+    # vbt.settings.caching['whitelist'].extend(['Portfolio.trades'])
+
+    # Corrermos simulaciones cada chunks de 8GB.
+    # Partimos el lag para que forme chunks de 8GB. Obs: usamos float64 => 8 bytes
+    # Total GBs = close.size * len(lr_thld) * len(vol_thld) *len(lag) * 8  / (1 << 30)
+    lags_partition_len = math.floor(MAX_CHUNK_SIZE * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8 ))
+    lag_chunks = divide_chunks(lag, lags_partition_len)
+    lrs: [MappedArray] = []
+    for lag_partition in tqdm(lag_chunks):
+        # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
+        signals = ENTRY_SIGNALS.run(lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
+                                    vol=volume, shifted_vol=shift_np(volume.to_numpy(), 1),
+                                    lr_thld=lr_thld, vol_thld=vol_thld, lag=lag_partition,
+                                    param_product=True, short_name="signals")
+
+        port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
+        lrs.append(port.trades.lr)
+        # we will disable caching to release memory as soon as the calculation of portfolio performance is over:
+        vbt.settings.caching['blacklist'].append(port)
+        del signals, port
+        gc.collect()
+
+    #del volume, lr_ind, close
+    return lrs
 
 
-def plots_from_trades(trades_lr: MappedArray, min_trades=500, min_lr=0.0, save_dir=None, parameters_to_save=None):
+def plots_from_trades(trades_lr: [MappedArray], min_trades=500, min_lr=0.0, save_dir=None, parameters_to_save=None):
     gc.collect()
     results = []
     logging.info('Creating results')
     # primero filtramos todas aquellas corridas que tengan menos de min_trades
-    trades_lr: MappedArray = trades_lr[trades_lr.count() >= min_trades]
+    trades_lr: [MappedArray] = list(map(lambda t_lr: t_lr[t_lr.count() >= min_trades], trades_lr))
     # ploteamos elr donde # trades >= min_Trades y elr > 0
-    elr = trades_lr.mean()
+    elr = pd.concat(map(lambda t_lr: t_lr.mean(), trades_lr))
     results.append({
         "data": dropnan(elr[elr > 0]),
         "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), AVG > 0, #Trades > {min_trades}",
@@ -136,7 +154,7 @@ def plots_from_trades(trades_lr: MappedArray, min_trades=500, min_lr=0.0, save_d
     def func(col, arr, *args):
         arr = arr[arr > min_lr]
         return arr.sum() / arr.size if arr.size > 0 else np.nan
-    elr_filtered = trades_lr.reduce(func)
+    elr_filtered = pd.concat(map(lambda t_lr: t_lr.reduce(func), trades_lr))
     results.append({
         "data": dropnan(elr_filtered[elr_filtered > 0]),
         "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), log(...) > 0, AVG > 0, #Trades > {min_trades}",
@@ -144,14 +162,14 @@ def plots_from_trades(trades_lr: MappedArray, min_trades=500, min_lr=0.0, save_d
     })
 
     # ploteamos media donde # trades >= min_Trades y mlr > 0
-    mlr = trades_lr.median()
+    mlr = pd.concat(map(lambda t_lr: t_lr.median(), trades_lr))
     results.append({
         "data": dropnan(mlr[mlr > 0]),
         "title": f"Median(log(p_exit/p_entry * (1-fee)**2)), Median > 0, #Trades > {min_trades}",
         "name": "MLR"
     })
     # ploteamos # trades > min_trades
-    trade_count = trades_lr.count()
+    trade_count = pd.concat(map(lambda t_lr: t_lr.count(), trades_lr))
     results.append({
         "data": dropnan(trade_count[trade_count > min_trades]),
         "title": f"#Trades > {min_trades}",
@@ -225,9 +243,7 @@ if __name__ == '__main__':
 
     fee = 0.001
 
-    port = create_portfolio(filepath, fee, lr_thld, vol_thld, lag)
-    trades_lrs = port.trades.lr
-    del port
+    trades_lrs = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag)
 
     min_lr = 0.0
     parameters_to_save = {

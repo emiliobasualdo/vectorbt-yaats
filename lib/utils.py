@@ -262,6 +262,13 @@ class ElapsedFormatter(logging.Formatter):
         elapsed = timedelta(seconds=elapsed_seconds)
         return "{} {}".format(elapsed, record.getMessage())
 
+# https://www.geeksforgeeks.org/break-list-chunks-size-n-python/
+# Yield successive n-sized
+# chunks from l.
+def divide_chunks(l, n):
+    # looping till length l
+    for i in range(0, len(l), n):
+        yield l[i:i + n]
 
 # def test():
 #     e_all_signals_in_ones = np.array([[np.nan],[np.nan],[np.nan],[1],[np.nan],[-1],[np.nan],[1],[1],[np.nan],[np.nan]])
