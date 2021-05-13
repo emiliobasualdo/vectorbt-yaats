@@ -69,7 +69,7 @@ ENTRY_SIGNALS = vbt.IndicatorFactory(
 ).from_apply_func(signals_nb, use_ray=True)
 
 
-def simulate_lrs(file, fee, lr_thld, vol_thld, lag) -> [MappedArray]:
+def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size=8) -> [MappedArray]:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
     Acá no consideramos ni Stop Loss ni Take Profit.
@@ -83,8 +83,6 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag) -> [MappedArray]:
     LRS+[i] = LR[i] < avg(LR[i - lag], ..., LR[i - 1]) + std(LR[i - lag], ..., LR[i - 1]) * T_l
     exit = LRS+[i]
     """
-
-    MAX_CHUNK_SIZE = 8  # 8GB
 
     # Levantamos un CSV
     logging.info('Loading ohlcv csv')
@@ -224,11 +222,14 @@ def plots_from_trades(trades_lr: [MappedArray], min_trades=500, min_lr=0.0, save
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Simulate Sell Off.')
-    parser.add_argument('ohlcv_csv', type=str, )
-    parser.add_argument('-m', '--min_trades', type=int, default=5)
+    parser.add_argument('ohlcv_csv', type=str, help="Open high low close volume data in .csv file")
+    parser.add_argument('-m', '--min_trades', type=int, default=5,
+                        help="Min amount of trades per simulation to consider the simulation as as meaningful")
+    parser.add_argument('-c', '--max_chunk_size', type=int, default=8, help="Max chunk size to simulate in Gigabytes")
     args = parser.parse_args()
     filepath = args.ohlcv_csv
     min_trades = args.min_trades
+    max_chunk_size = args.min_trades
 
     # add custom formatter to root logger for simple demonstration
     handler = logging.StreamHandler()
@@ -243,7 +244,7 @@ if __name__ == '__main__':
 
     fee = 0.001
 
-    trades_lrs = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag)
+    trades_lrs = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag, max_chunk_size)
 
     min_lr = 0.0
     parameters_to_save = {
