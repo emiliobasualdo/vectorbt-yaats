@@ -245,7 +245,7 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--min_trades', type=int, default=5,
                         help="Min amount of trades per simulation to consider the simulation as as meaningful")
     parser.add_argument('-c', '--max_chunk_size', type=int, default=8, help="Max chunk size to simulate in Gigabytes")
-    parser.add_argument('-r', '--reuse', type=bool, default=False, help="Reuse intermediate results from previous runs")
+    parser.add_argument('-r', '--reuse', action='store_true', help="Reuse intermediate results from previous runs")
     args = parser.parse_args()
     filepath = args.ohlcv_csv
     min_trades = args.min_trades
