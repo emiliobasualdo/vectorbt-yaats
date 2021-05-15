@@ -69,7 +69,22 @@ ENTRY_SIGNALS = vbt.IndicatorFactory(
 ).from_apply_func(signals_nb, use_ray=True)
 
 
-def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size) -> [MappedArray]:
+def replace_dir(dir):
+    if os.path.exists(dir):
+        shutil.rmtree(dir)
+    os.makedirs(dir)
+
+
+def load_intermediate_files(temp_dir):
+    # levantamos todos los resultados intermedios y borramos el directorio
+    lrs: [MappedArray] = []
+    for file in glob.glob(f'{temp_dir}/*.tmp'):
+        lrs.append(vbt.MappedArray.load(file))
+    shutil.rmtree(temp_dir)
+    return lrs
+
+
+def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, temp_dir) -> [MappedArray]:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
     Acá no consideramos ni Stop Loss ni Take Profit.
@@ -117,8 +132,7 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size) -> [MappedAr
     logging.info(f'Chunks size={lags_partition_size}, count={len(lag_chunks)}')
 
     # creamos un directorio temporal para guardar datos intermedios y liberar memoria
-    temp_dir = "/tmp/selloff"
-    os.mkdir(temp_dir)
+    replace_dir(temp_dir)
     for lag_partition in tqdm(lag_chunks):
         # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
         signals = ENTRY_SIGNALS.run(lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
@@ -136,13 +150,7 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size) -> [MappedAr
         gc.collect()
 
     del volume, lr_ind, close
-    # levantamos todos los archivos temporales y borramos el directorio
-    os.chdir(temp_dir)
-    lrs: [MappedArray] = []
-    for file in glob.glob("*.tmp"):
-        lrs.append(vbt.MappedArray.load(file))
-    shutil.rmtree(temp_dir)
-    return lrs
+    return load_intermediate_files(temp_dir)
 
 
 def plots_from_trades(trades_lr: [MappedArray], min_trades=500, min_lr=0.0, save_dir=None, parameters_to_save=None):
@@ -191,9 +199,7 @@ def plots_from_trades(trades_lr: [MappedArray], min_trades=500, min_lr=0.0, save
     if save_dir is not None:
         logging.info('Saving parameters')
         # create or replace dir if exists
-        if os.path.exists(save_dir):
-            shutil.rmtree(save_dir)
-        os.makedirs(save_dir)
+        replace_dir(save_dir)
         # contador para llevar un orden visual por orden de creación
         plot_counter = 0
         if parameters_to_save is not None:
@@ -239,10 +245,12 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--min_trades', type=int, default=5,
                         help="Min amount of trades per simulation to consider the simulation as as meaningful")
     parser.add_argument('-c', '--max_chunk_size', type=int, default=8, help="Max chunk size to simulate in Gigabytes")
+    parser.add_argument('-r', '--reuse', type=bool, default=False, help="Reuse intermediate results from previous runs")
     args = parser.parse_args()
     filepath = args.ohlcv_csv
     min_trades = args.min_trades
     max_chunk_size = args.max_chunk_size
+    reuse = args.reuse
 
     # add custom formatter to root logger for simple demonstration
     handler = logging.StreamHandler()
@@ -257,7 +265,13 @@ if __name__ == '__main__':
 
     fee = 0.001
 
-    trades_lrs = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag, max_chunk_size)
+    temp_dir = "/tmp/selloff"
+
+    if reuse:
+        logging.info(f"Reusing intermediate results in {temp_dir} from previous simulations")
+        trades_lrs = load_intermediate_files(temp_dir)
+    else:
+        trades_lrs = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag, max_chunk_size, temp_dir)
 
     min_lr = 0.0
     parameters_to_save = {
