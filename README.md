@@ -2,7 +2,7 @@
 
 Arrancar leyendo el código por `strategies/SellOff/SellOff.py`
 ## Setup
-Using Python 3.7.10, should work with >= 3.7.10
+Python >= 3.7.10
 ```
 source venv/bin/activate
 ```
@@ -15,7 +15,9 @@ pip install -r requirements.txt
 pip freeze > requirements. txt
 ```
 ### Run
+El header del archivo .csv debe ser el siguiente formato: 
+`unix,date,symbol,open,high,low,close,Volume BNB,Volume USDT,tradecount`
 ```
 cd strategies/SellOff
-python SellOff.py -m 500 /Users/pilo/development/itba/pf/Binance_Minute_OHLC_CSVs/3000/Binance_BNBUSDT_minute_3000.csv
+python SellOff.py -m 500 archivo.csv
 ```
