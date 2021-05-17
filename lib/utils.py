@@ -1,5 +1,7 @@
 import logging
 import math
+import os
+import shutil
 import time
 from datetime import timedelta
 from math import floor
@@ -177,6 +179,13 @@ def plot_series_vs_scatters(series_list: list, booleans_list):
         i += 1
         fig = scatter.vbt.scatterplot(fig=fig)
     return fig
+
+
+def replace_dir(dir):
+    if os.path.exists(dir):
+        shutil.rmtree(dir)
+    os.makedirs(dir)
+
 
 # preallocate empty array and assign slice by chrisaycock
 @njit

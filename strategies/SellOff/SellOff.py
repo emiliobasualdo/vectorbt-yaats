@@ -24,7 +24,8 @@ module_path = os.path.abspath(os.path.join('../..'))
 if module_path not in sys.path:
     sys.path.append(module_path)
 
-from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, dropnan, divide_chunks
+from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, dropnan, divide_chunks, \
+    replace_dir
 
 
 @njit
@@ -69,22 +70,56 @@ ENTRY_SIGNALS = vbt.IndicatorFactory(
 ).from_apply_func(signals_nb, use_ray=True)
 
 
-def replace_dir(dir):
-    if os.path.exists(dir):
-        shutil.rmtree(dir)
-    os.makedirs(dir)
+def merge_intermediate_results(results: [{}]) -> {}:
+    merged = {}
+    keys = results[0].keys()  # = ["ELR", "ELR_positive_LR", "MLR", ...]
+    for k in keys:
+        merged[k] = {
+            "data": pd.concat(map(lambda r: r[k]['data'], results)),
+            "title": results[0][k]["title"]
+        }
+    return merged
 
 
-def load_intermediate_files(temp_dir):
-    # levantamos todos los resultados intermedios y borramos el directorio
-    lrs: [MappedArray] = []
-    for file in glob.glob(f'{temp_dir}/*.tmp'):
-        lrs.append(vbt.MappedArray.load(file))
-    shutil.rmtree(temp_dir)
-    return lrs
+def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr) -> {}:
+    trade_count = trades_lr.count()
+    trades_lr = trades_lr[trade_count >= min_trades]
+
+    results = {}
+    # ploteamos elr donde # trades >= min_Trades y elr > 0
+    elr = trades_lr.mean()
+    results["ELR"] = {
+        "data": elr,
+        "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), AVG > 0, #Trades > {min_trades}",
+    }
+
+    # filtramos los lr que sean < min_lr
+    # ploteamos elr donde lr > 0 la media se toma como la suma  (lr > 0) / (#lr>0)), # trades >= min_Trades y elr > 0
+    @njit
+    def func(col, arr, *args):
+        arr = arr[arr > min_lr]
+        return arr.sum() / arr.size if arr.size > 0 else np.nan
+    elr_filtered = trades_lr.reduce(func)
+    elr_filtered.name = "Positive_ELR"
+    results['ELR_positive_LR'] = {
+        "data": elr_filtered,
+        "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), log(...) > 0, AVG > 0, #Trades > {min_trades}",
+    }
+
+    # ploteamos media donde # trades >= min_Trades y mlr > 0
+    results['MLR'] = {
+        "data": trades_lr.median(),
+        "title": f"Median(log(p_exit/p_entry * (1-fee)**2)), Median > 0, #Trades > {min_trades}",
+    }
+    # ploteamos # trades > min_trades
+    results['Trade_count'] = {
+        "data": trade_count,
+        "title": f"#Trades > {min_trades}",
+    }
+    return results
 
 
-def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, temp_dir) -> [MappedArray]:
+def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades, min_lr) -> {}:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
     Acá no consideramos ni Stop Loss ni Take Profit.
@@ -131,8 +166,8 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, temp_dir) ->
     lag_chunks = divide_chunks(lag, lags_partition_size)
     logging.info(f'Chunks size={lags_partition_size}, count={len(lag_chunks)}')
 
-    # creamos un directorio temporal para guardar datos intermedios y liberar memoria
-    replace_dir(temp_dir)
+    # guardamos la partición de resultados intermedios
+    metrics = []
     for lag_partition in tqdm(lag_chunks):
         # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
         signals = ENTRY_SIGNALS.run(lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
@@ -143,100 +178,43 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, temp_dir) ->
         port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
         # filtramos todas aquellas corridas que tengan menos de min_trades
         lr = port.trades.lr
-        lr[lr.count() >= min_trades].save(f"{temp_dir}/{lag_partition[0]}.tmp")
+        metrics.append(calculate_metrics(lr, min_trades, min_lr))
         # we will disable caching to release memory as soon as the calculation of portfolio performance is over:
         vbt.settings.caching['blacklist'].append(port)
         del signals, port, lr
         gc.collect()
 
     del volume, lr_ind, close
-    return load_intermediate_files(temp_dir)
+    return merge_intermediate_results(metrics)
 
 
-def plots_from_trades(trades_lr: [MappedArray], min_trades=500, min_lr=0.0, save_dir=None, parameters_to_save=None):
+def plots_from_metrics(metrics: {}, save_dir):
     gc.collect()
-    results = []
-    logging.info('Creating results')
+    logging.info('Saving plots')
+    # create or replace dir if exists
+    replace_dir(save_dir)
+    # contador para llevar un orden visual por orden de creación
+    plot_counter = 0
+    # todo paralelizar
+    for metric_name, metric in metrics.items():
+        if not metric["data"].size:
+            logging.info(f"Empty results for {metric_name}")
+            continue
+        # guardamos los gráficos 3d
+        filepath = f"{save_dir}/{plot_counter}-{metric_name}_volume.html"
+        metric["data"].vbt.volume(title=metric["title"]).write_html(filepath)
 
-    # ploteamos elr donde # trades >= min_Trades y elr > 0
-    elr = pd.concat(map(lambda t_lr: t_lr.mean(), trades_lr))
-    results.append({
-        "data": dropnan(elr[elr > 0]),
-        "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), AVG > 0, #Trades > {min_trades}",
-        "name": "ELR"
-    })
+        # guardamos Plots 2d de la optimización lag , lr_thld ,vol_thld con lag como slider
+        filepath = f"{save_dir}/{plot_counter}-{metric_name}_heatmap.html"
+        metric["data"].vbt.heatmap(title=metric["title"], slider_level='signals_lag').write_html(filepath)
 
-    # filtramos los lr que sean > min_lr
-    # ploteamos elr donde lr > 0 la media se toma como la suma  (lr > 0) / (#lr>0)), # trades >= min_Trades y elr > 0
-    @njit
-    def func(col, arr, *args):
-        arr = arr[arr > min_lr]
-        return arr.sum() / arr.size if arr.size > 0 else np.nan
 
-    elr_filtered = pd.concat(map(lambda t_lr: t_lr.reduce(func), trades_lr))
-    results.append({
-        "data": dropnan(elr_filtered[elr_filtered > 0]),
-        "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), log(...) > 0, AVG > 0, #Trades > {min_trades}",
-        "name": "ELR_positive_LR"
-    })
-
-    # ploteamos media donde # trades >= min_Trades y mlr > 0
-    mlr = pd.concat(map(lambda t_lr: t_lr.median(), trades_lr))
-    results.append({
-        "data": dropnan(mlr[mlr > 0]),
-        "title": f"Median(log(p_exit/p_entry * (1-fee)**2)), Median > 0, #Trades > {min_trades}",
-        "name": "MLR"
-    })
-    # ploteamos # trades > min_trades
-    trade_count = pd.concat(map(lambda t_lr: t_lr.count(), trades_lr))
-    results.append({
-        "data": dropnan(trade_count[trade_count > min_trades]),
-        "title": f"#Trades > {min_trades}",
-        "name": "Trade_count"
-    })
-
-    del trades_lr
-    if save_dir is not None:
-        logging.info('Saving parameters')
-        # create or replace dir if exists
-        replace_dir(save_dir)
-        # contador para llevar un orden visual por orden de creación
-        plot_counter = 0
-        if parameters_to_save is not None:
-            # guardamos los parámetros para estar al tanto de sus valores al momento de estudiarlos
-            filepath = f"{save_dir}/{plot_counter}-params.txt"
-            plot_counter += 1
-            with open(filepath, 'w') as file:
-                file.write(json.dumps(parameters_to_save, indent=2))
-
-        logging.info('Saving volumes and heatmaps')
-        # todo paralelizar
-        for i in range(len(results)):
-            if not results[i]["data"].size:
-                logging.info(f"Empty results for {results[i]['name']}")
-                continue
-            # guardamos los gráficos 3d
-            filepath = f"{save_dir}/{plot_counter}-{results[i]['name']}_volume.html"
-            results[i]["data"].vbt.volume(title=results[i]["title"]).write_html(filepath)
-
-            # guardamos Plots 2d de la optimización lag , lr_thld ,vol_thld con lag como slider
-            filepath = f"{save_dir}/{plot_counter}-{results[i]['name']}_heatmap.html"
-            results[i]["data"].vbt.heatmap(title=results[i]["title"], slider_level='signals_lag').write_html(
-                filepath)
-
-            plot_counter += 1
-
-        logging.info('Saving results as csv')
-        # guardamos los top 20 resultados unique en una tabla csv
-        csv_string = ""
-        for i in range(len(results)):
-            df = results[i]["data"]
-            name = results[i]['name']
-            csv_string = csv_string + f"\n{name}\n{df.nlargest(20, keep='all').to_csv()}"
-        csv_filepath = f"{save_dir}/{plot_counter}-nlargest_results.csv"
         plot_counter += 1
-        with open(csv_filepath, 'w') as writer:
-            writer.write(csv_string)
+
+    # guardamos los resultados en un csv
+    all_metrics_df = pd.concat(map(lambda m: m["data"], metrics.values()), axis=1)
+    with open(f"{save_dir}/{plot_counter}-metrics.csv", 'w') as writer:
+        writer.write(all_metrics_df.to_csv())
 
 
 if __name__ == '__main__':
@@ -245,12 +223,10 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--min_trades', type=int, default=5,
                         help="Min amount of trades per simulation to consider the simulation as as meaningful")
     parser.add_argument('-c', '--max_chunk_size', type=int, default=8, help="Max chunk size to simulate in Gigabytes")
-    parser.add_argument('-r', '--reuse', action='store_true', help="Reuse intermediate results from previous runs")
     args = parser.parse_args()
     filepath = args.ohlcv_csv
     min_trades = args.min_trades
     max_chunk_size = args.max_chunk_size
-    reuse = args.reuse
 
     # add custom formatter to root logger for simple demonstration
     handler = logging.StreamHandler()
@@ -264,16 +240,14 @@ if __name__ == '__main__':
     lag = list(range(6, 100, 2))
 
     fee = 0.001
-
-    temp_dir = "/tmp/selloff"
-
-    if reuse:
-        logging.info(f"Reusing intermediate results in {temp_dir} from previous simulations")
-        trades_lrs = load_intermediate_files(temp_dir)
-    else:
-        trades_lrs = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag, max_chunk_size, temp_dir)
-
     min_lr = 0.0
+
+    metrics = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades, min_lr)
+
+    _, filename = os.path.split(filepath)
+    save_dir = f"./{filename[:-4]}"
+
+    # guardamos los parámetros para estar al tanto de sus valores al momento de estudiarlos
     parameters_to_save = {
         **vars(args),
         "lr_thld": f"range({lr_thld[0]},{lr_thld[-1]}, steps={len(lr_thld)})",
@@ -282,8 +256,8 @@ if __name__ == '__main__':
         "fee": fee,
         "min_lr": min_lr
     }
-    _, filename = os.path.split(filepath)
+    with open(f"{save_dir}/parameters.txt", 'w') as file:
+        file.write(json.dumps(parameters_to_save, indent=2))
 
-    save_dir = f"./{filename[:-4]}"
-    plots_from_trades(trades_lrs, min_trades=min_trades, min_lr=min_lr, save_dir=save_dir,
-                      parameters_to_save=parameters_to_save)
+    # graficamos y guardamos las métricas
+    plots_from_metrics(metrics, save_dir=save_dir)
