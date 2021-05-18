@@ -128,7 +128,9 @@ def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, p
     # filtramos todas aquellas corridas que tengan menos de min_trades
     lr = port.trades.lr
     del signals, port
-    return calculate_metrics(lr, min_trades)
+    metrics = calculate_metrics(lr, min_trades)
+    logging.info(f"Chunk {lag_partition[0]} done")
+    return metrics
 
 def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size, min_trades) -> {}:
     """
