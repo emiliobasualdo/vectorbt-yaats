@@ -120,27 +120,17 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     }
     return results
 
-def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades):
+def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs):
     # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
     signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag_partition,
                                 param_product=True, short_name="signals")
-
-    portfolio_kwargs = dict(
-        direction='longonly',  # Solo long, no se shortea
-        freq='m',
-        size=np.inf,  # Se compra y vende toda la caja en cada operación.
-        fees=fee,
-        max_logs=0,
-    )
     port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
     # filtramos todas aquellas corridas que tengan menos de min_trades
     lr = port.trades.lr
-    # we will disable caching to release memory as soon as the calculation of portfolio performance is over:
-    vbt.settings.caching['blacklist'].append(port)
-    #del signals, port, lr
+    del signals, port
     return calculate_metrics(lr, min_trades)
 
-def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades) -> {}:
+def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size, min_trades) -> {}:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
     Acá no consideramos ni Stop Loss ni Take Profit.
@@ -168,9 +158,6 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades) 
     lr_ind = LR.run(close)
 
     logging.info('Simulating portfolio')
-    # solo cacheamos los trades
-    vbt.settings.caching['blacklist'].append('Portfolio')
-    vbt.settings.caching['whitelist'].extend(['Portfolio.trades'])
 
     # Corrermos simulaciones cada chunks de 8GB.
     # Partimos el lag para que forme chunks de 8GB. Obs: usamos float64 => 8 bytes
@@ -186,7 +173,7 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades) 
         vol=volume, shifted_vol=shift_np(volume.to_numpy(), 1),
         lr_thld=lr_thld, vol_thld=vol_thld
     )
-    partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades)
+    partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
     with Pool() as p:
         metrics = p.map(partial_simulate_chunk, lag_chunks)
 
@@ -246,9 +233,15 @@ if __name__ == '__main__':
     vol_thld = np.linspace(0, 4, 30, endpoint=True)
     lag = list(range(6, 100, 2))
 
-    fee = 0.001
+    portfolio_kwargs = dict(
+        direction='longonly',  # Solo long, no se shortea
+        freq='m',
+        size=np.inf,  # Se compra y vende toda la caja en cada operación.
+        fees=0.001,
+        max_logs=0,
+    )
 
-    metrics = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades)
+    metrics = simulate_lrs(filepath, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size, min_trades)
 
     # guardamos los parámetros para estar al tanto de sus valores al momento de estudiarlos
     _, filename = os.path.split(filepath)
@@ -256,10 +249,10 @@ if __name__ == '__main__':
     replace_dir(save_dir)
     parameters_to_save = {
         **vars(args),
+        **portfolio_kwargs,
         "lr_thld": f"range({lr_thld[0]},{lr_thld[-1]}, steps={len(lr_thld)})",
         "vol_thld": f"range({vol_thld[0]},{vol_thld[-1]}, steps={len(vol_thld)})",
         "lag": f"range({lag[0]},{lag[-1]}, steps={len(lag)})",
-        "fee": fee,
     }
     # create or replace dir if exists
     with open(f"{save_dir}/parameters.txt", 'w') as file:
