@@ -4,6 +4,8 @@ import glob
 import shutil
 from datetime import timedelta
 import time
+from functools import partial
+from multiprocessing import Pool
 
 import pandas
 import vectorbt as vbt
@@ -81,7 +83,7 @@ def merge_intermediate_results(results: [{}]) -> {}:
     return merged
 
 
-def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr) -> {}:
+def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     trade_count = trades_lr.count()
     trades_lr = trades_lr[trade_count >= min_trades]
 
@@ -90,7 +92,7 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr) -> {}:
     elr = trades_lr.mean()
     results["ELR"] = {
         "data": elr,
-        "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), AVG > 0, #Trades > {min_trades}",
+        "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)),  #Trades > {min_trades}",
     }
 
     # filtramos los lr que sean < min_lr
@@ -103,13 +105,13 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr) -> {}:
     elr_filtered.name = "Positive_ELR"
     results['ELR_positive_LR'] = {
         "data": elr_filtered,
-        "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), log(...) > 0, AVG > 0, #Trades > {min_trades}",
+        "title": f"AVG(log(p_exit/p_entry * (1-fee)**2)), log(...) > {min_lr}, #Trades > {min_trades}",
     }
 
     # ploteamos media donde # trades >= min_Trades y mlr > 0
     results['MLR'] = {
         "data": trades_lr.median(),
-        "title": f"Median(log(p_exit/p_entry * (1-fee)**2)), Median > 0, #Trades > {min_trades}",
+        "title": f"Median(log(p_exit/p_entry * (1-fee)**2)), #Trades > {min_trades}",
     }
     # ploteamos # trades > min_trades
     results['Trade_count'] = {
@@ -118,8 +120,27 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr) -> {}:
     }
     return results
 
+def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades):
+    # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
+    signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag_partition,
+                                param_product=True, short_name="signals")
 
-def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades, min_lr) -> {}:
+    portfolio_kwargs = dict(
+        direction='longonly',  # Solo long, no se shortea
+        freq='m',
+        size=np.inf,  # Se compra y vende toda la caja en cada operación.
+        fees=fee,
+        max_logs=0,
+    )
+    port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
+    # filtramos todas aquellas corridas que tengan menos de min_trades
+    lr = port.trades.lr
+    # we will disable caching to release memory as soon as the calculation of portfolio performance is over:
+    vbt.settings.caching['blacklist'].append(port)
+    #del signals, port, lr
+    return calculate_metrics(lr, min_trades)
+
+def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades) -> {}:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
     Acá no consideramos ni Stop Loss ni Take Profit.
@@ -146,13 +167,6 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades, 
     # Calculamos el log return de los precios(log return indicator)
     lr_ind = LR.run(close)
 
-    portfolio_kwargs = dict(
-        direction='longonly',  # Solo long, no se shortea
-        freq='m',
-        size=np.inf,  # Se compra y vende toda la caja en cada operación.
-        fees=fee,
-        max_logs=0,
-    )
     logging.info('Simulating portfolio')
     # solo cacheamos los trades
     vbt.settings.caching['blacklist'].append('Portfolio')
@@ -162,37 +176,26 @@ def simulate_lrs(file, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades, 
     # Partimos el lag para que forme chunks de 8GB. Obs: usamos float64 => 8 bytes
     total_gbs = close.size * len(lr_thld) * len(vol_thld) * len(lag) * 8 / (1 << 30)
     logging.info(f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs,2)}GB')
-    lags_partition_size = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
-    lag_chunks = divide_chunks(lag, lags_partition_size)
-    logging.info(f'Chunks size={lags_partition_size}, count={len(lag_chunks)}')
+    lags_partition_len = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
+    lag_chunks = divide_chunks(lag, lags_partition_len)
+    logging.info(f'Chunks len={lags_partition_len}, #chunks={len(lag_chunks)}')
 
-    # guardamos la partición de resultados intermedios
-    metrics = []
-    for lag_partition in tqdm(lag_chunks):
-        # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
-        signals = ENTRY_SIGNALS.run(lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
-                                    vol=volume, shifted_vol=shift_np(volume.to_numpy(), 1),
-                                    lr_thld=lr_thld, vol_thld=vol_thld, lag=lag_partition,
-                                    param_product=True, short_name="signals")
-
-        port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
-        # filtramos todas aquellas corridas que tengan menos de min_trades
-        lr = port.trades.lr
-        metrics.append(calculate_metrics(lr, min_trades, min_lr))
-        # we will disable caching to release memory as soon as the calculation of portfolio performance is over:
-        vbt.settings.caching['blacklist'].append(port)
-        del signals, port, lr
-        gc.collect()
+    # multi-procesamos
+    signals_static_args = dict(
+        lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
+        vol=volume, shifted_vol=shift_np(volume.to_numpy(), 1),
+        lr_thld=lr_thld, vol_thld=vol_thld
+    )
+    partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades)
+    with Pool() as p:
+        metrics = p.map(partial_simulate_chunk, lag_chunks)
 
     del volume, lr_ind, close
     return merge_intermediate_results(metrics)
 
 
 def plots_from_metrics(metrics: {}, save_dir):
-    gc.collect()
     logging.info('Saving plots')
-    # create or replace dir if exists
-    replace_dir(save_dir)
     # contador para llevar un orden visual por orden de creación
     plot_counter = 0
     # todo paralelizar
@@ -203,6 +206,10 @@ def plots_from_metrics(metrics: {}, save_dir):
         # guardamos los gráficos 3d
         filepath = f"{save_dir}/{plot_counter}-{metric_name}_volume.html"
         metric["data"].vbt.volume(title=metric["title"]).write_html(filepath)
+
+        # guardamos los box&whiskers
+        filepath = f"{save_dir}/{plot_counter}-{metric_name}_bnw.html"
+        metric["data"].vbt.boxplot(title=metric["title"]).write_html(filepath)
 
         # guardamos Plots 2d de la optimización lag , lr_thld ,vol_thld con lag como slider
         filepath = f"{save_dir}/{plot_counter}-{metric_name}_heatmap.html"
@@ -240,22 +247,21 @@ if __name__ == '__main__':
     lag = list(range(6, 100, 2))
 
     fee = 0.001
-    min_lr = 0.0
 
-    metrics = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades, min_lr)
-
-    _, filename = os.path.split(filepath)
-    save_dir = f"./{filename[:-4]}"
+    metrics = simulate_lrs(filepath, fee, lr_thld, vol_thld, lag, max_chunk_size, min_trades)
 
     # guardamos los parámetros para estar al tanto de sus valores al momento de estudiarlos
+    _, filename = os.path.split(filepath)
+    save_dir = f"./{filename[:-4]}"
+    replace_dir(save_dir)
     parameters_to_save = {
         **vars(args),
         "lr_thld": f"range({lr_thld[0]},{lr_thld[-1]}, steps={len(lr_thld)})",
         "vol_thld": f"range({vol_thld[0]},{vol_thld[-1]}, steps={len(vol_thld)})",
         "lag": f"range({lag[0]},{lag[-1]}, steps={len(lag)})",
         "fee": fee,
-        "min_lr": min_lr
     }
+    # create or replace dir if exists
     with open(f"{save_dir}/parameters.txt", 'w') as file:
         file.write(json.dumps(parameters_to_save, indent=2))
 
