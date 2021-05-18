@@ -120,6 +120,7 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     }
     return results
 
+pbar = tqdm()
 def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs):
     # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
     signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag_partition,
@@ -129,7 +130,8 @@ def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, p
     lr = port.trades.lr
     del signals, port
     metrics = calculate_metrics(lr, min_trades)
-    logging.info(f"Chunk {lag_partition[0]} done")
+    #logging.info(f"Chunk {lag_partition[0]} done")
+    pbar.update(1)
     return metrics
 
 def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size, min_trades) -> {}:
@@ -168,7 +170,7 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size,
     lags_partition_len = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
     lag_chunks = divide_chunks(lag, lags_partition_len)
     logging.info(f'Chunks len={lags_partition_len}, #chunks={len(lag_chunks)}')
-
+    pbar.total = len(lag_chunks)
     # multi-procesamos
     signals_static_args = dict(
         lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
@@ -178,7 +180,7 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size,
     partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
     with Pool() as p:
         metrics = p.map(partial_simulate_chunk, lag_chunks)
-
+    p.close()
     del volume, lr_ind, close
     return merge_intermediate_results(metrics)
 
