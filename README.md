@@ -4,9 +4,15 @@ Arrancar leyendo el código por `strategies/SellOff/SellOff.py`
 ## Setup
 Python >= 3.7.10
 ```
+python -m venv venv
 source venv/bin/activate
 ```
 ### Install requirements
+Tal vez haya que instalar gcc y otros antes
+```
+sudo yum install python3-devel gcc
+```
+Primero instalar [TA-LIB](https://github.com/mrjbq7/ta-lib#dependencies)  
 ```
 pip install -r requirements.txt
 ```

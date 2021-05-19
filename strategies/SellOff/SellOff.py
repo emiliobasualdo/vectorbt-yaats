@@ -7,7 +7,7 @@ import multiprocessing
 import os
 import pickle
 import shutil
-import sys
+import platform
 from functools import partial
 import numpy as np
 import pandas as pd
@@ -18,13 +18,8 @@ from p_tqdm import p_map
 from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
 
-module_path = os.path.abspath(os.path.join('../..'))
-if module_path not in sys.path:
-    sys.path.append(module_path)
-
 from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, divide_chunks, \
     replace_dir
-
 
 @njit
 def signal_calculations(lr, lr_ma, lr_mstd, vol, vol_ma, lr_thld, vol_thld):
@@ -35,14 +30,12 @@ def signal_calculations(lr, lr_ma, lr_mstd, vol, vol_ma, lr_thld, vol_thld):
     vol_entries = np.where(vol > vol_thld * vol_ma, True, False)
     return lr_entries, lr_exits, vol_entries
 
-
 @njit
 def ma_mstd(shifted_lr, shifted_volume, lag):
     lr_ma = generic_nb.rolling_mean_nb(shifted_lr, lag)
     lr_mstd = generic_nb.rolling_std_nb(shifted_lr, lag)
     vol_ma = generic_nb.rolling_mean_nb(shifted_volume, lag)
     return lr_ma, lr_mstd, vol_ma
-
 
 @njit
 def signals_nb(lr, shifted_lr, vol, shifted_vol, lr_thld, vol_thld, lag):
@@ -60,13 +53,11 @@ def signals_nb(lr, shifted_lr, vol, shifted_vol, lr_thld, vol_thld, lag):
     final_entries = lr_entries & vol_entries
     return final_entries, lr_exits
 
-
 ENTRY_SIGNALS = vbt.IndicatorFactory(
     input_names=['lr', 'shifted_lr', 'vol', 'shifted_vol'],
     param_names=['lr_thld', 'vol_thld', 'lag'],
     output_names=['entries', 'exits']
 ).from_apply_func(signals_nb, use_ray=True)
-
 
 def merge_intermediate_results(results: [{}]) -> {}:
     merged = {}
@@ -77,7 +68,6 @@ def merge_intermediate_results(results: [{}]) -> {}:
             "title": results[0][k]["title"]
         }
     return merged
-
 
 def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     trade_count = trades_lr.count()
@@ -116,7 +106,7 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     }
     return results
 
-def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs, partial_metrics_dir):
+def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs):
     # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
     signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag_partition,
                                 param_product=True, short_name="signals")
@@ -124,19 +114,7 @@ def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, p
     # filtramos todas aquellas corridas que tengan menos de min_trades
     lr = port.trades.lr
     metrics = calculate_metrics(lr, min_trades)
-    # https://docs.python.org/3.7/library/multiprocessing.html#programming-guidelines
-    # As far as possible one should try to avoid shifting large amounts of data between processes.
-    # por guardamos las métricas en archivos
-    filename = f"{partial_metrics_dir}/{lag_partition[0]}.tmp"
-    with open(filename, 'wb') as f:
-        pickle.dump(metrics, f)
-    return filename
-
-def wrapped_simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs, partial_metrics_dir):
-    try:
-        simulate_chunk(lag_partition, signals_static_args, close, min_trades, portfolio_kwargs, partial_metrics_dir)
-    except Exception as e:
-        logging.info(e)
+    return metrics
 
 def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> {}:
     """
@@ -172,10 +150,9 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
     total_gbs = close.size * len(lr_thld) * len(vol_thld) * len(lag) * 8 / (1 << 30)
     logging.info(f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs,2)}GB')
 
-    cpu_count = multiprocessing.cpu_count()
+    parallelize = platform.system() == "Darwin"
     available_memory = psutil.virtual_memory().available
-
-    lags_partition_len = math.floor(available_memory / (cpu_count * 2 * close.size * len(lr_thld) * len(vol_thld) * 8))
+    lags_partition_len = math.floor(available_memory / (2 * close.size * len(lr_thld) * len(vol_thld) * 8))  # el 2 es arbitrario
     lag_chunks = divide_chunks(lag, lags_partition_len)
     logging.info(f'Chunks len={lags_partition_len}, #chunks={len(lag_chunks)}')
     # multi-procesamos
@@ -184,26 +161,23 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
         vol=volume, shifted_vol=shift_np(volume.to_numpy(), 1),
         lr_thld=lr_thld, vol_thld=vol_thld
     )
-    partial_metrics_dir = "./tmp"
-    replace_dir(partial_metrics_dir)
-    partial_simulate_chunk = partial(wrapped_simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs, partial_metrics_dir=partial_metrics_dir)
-    with multiprocessing.Pool(cpu_count) as p:
-        p.map(partial_simulate_chunk, lag_chunks, chunksize=math.floor(cpu_count/len(lag_chunks)))
+    partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
+    if False:
+        with multiprocessing.Pool() as p:
+            metrics = p.map(partial_simulate_chunk, lag_chunks)
+    else:
+        metrics = []
+        for chunk in lag_chunks:
+            metrics.append(partial_simulate_chunk(chunk))
+
     logging.info('Simulation done')
     # levantamos las métricas de los archivos generados por los procesos
-    metrics = []
-    for file in glob.glob(f"{partial_metrics_dir}/*.tmp"):
-        with open(file, 'rb') as f:
-            metrics.append(pickle.load(f))
-    shutil.rmtree(partial_metrics_dir)
     return merge_intermediate_results(metrics)
-
 
 def plots_from_metrics(metrics: {}, save_dir):
     logging.info('Saving plots')
     # contador para llevar un orden visual por orden de creación
     plot_counter = 0
-    # todo paralelizar
     for metric_name, metric in metrics.items():
         if not metric["data"].size:
             logging.info(f"Empty results for {metric_name}")
