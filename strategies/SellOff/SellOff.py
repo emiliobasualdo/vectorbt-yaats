@@ -1,25 +1,28 @@
 import argparse
-import glob
 import json
 import logging
 import math
 import multiprocessing
 import os
-import pickle
-import shutil
 import platform
+import sys
 from functools import partial
+
 import numpy as np
 import pandas as pd
 import psutil
 import vectorbt as vbt
 from numba import njit
-from p_tqdm import p_map
 from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
 
+module_path = os.path.abspath(os.path.join('..'))
+if module_path not in sys.path:
+    sys.path.append(module_path)
+
 from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, divide_chunks, \
     replace_dir
+
 
 @njit
 def signal_calculations(lr, lr_ma, lr_mstd, vol, vol_ma, lr_thld, vol_thld):
@@ -30,12 +33,14 @@ def signal_calculations(lr, lr_ma, lr_mstd, vol, vol_ma, lr_thld, vol_thld):
     vol_entries = np.where(vol > vol_thld * vol_ma, True, False)
     return lr_entries, lr_exits, vol_entries
 
+
 @njit
 def ma_mstd(shifted_lr, shifted_volume, lag):
     lr_ma = generic_nb.rolling_mean_nb(shifted_lr, lag)
     lr_mstd = generic_nb.rolling_std_nb(shifted_lr, lag)
     vol_ma = generic_nb.rolling_mean_nb(shifted_volume, lag)
     return lr_ma, lr_mstd, vol_ma
+
 
 @njit
 def signals_nb(lr, shifted_lr, vol, shifted_vol, lr_thld, vol_thld, lag):
@@ -53,11 +58,13 @@ def signals_nb(lr, shifted_lr, vol, shifted_vol, lr_thld, vol_thld, lag):
     final_entries = lr_entries & vol_entries
     return final_entries, lr_exits
 
+
 ENTRY_SIGNALS = vbt.IndicatorFactory(
     input_names=['lr', 'shifted_lr', 'vol', 'shifted_vol'],
     param_names=['lr_thld', 'vol_thld', 'lag'],
     output_names=['entries', 'exits']
 ).from_apply_func(signals_nb, use_ray=True)
+
 
 def merge_intermediate_results(results: [{}]) -> {}:
     merged = {}
@@ -68,6 +75,7 @@ def merge_intermediate_results(results: [{}]) -> {}:
             "title": results[0][k]["title"]
         }
     return merged
+
 
 def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     trade_count = trades_lr.count()
@@ -87,6 +95,7 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     def func(col, arr, *args):
         arr = arr[arr > min_lr]
         return arr.sum() / arr.size if arr.size > 0 else np.nan
+
     elr_filtered = trades_lr.reduce(func)
     elr_filtered.name = "Positive_ELR"
     results['ELR_positive_LR'] = {
@@ -106,7 +115,8 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     }
     return results
 
-def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs):
+
+def simulate_chunk(lag_partition, signals_static_args: dict, close, min_trades, portfolio_kwargs):
     # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
     signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag_partition,
                                 param_product=True, short_name="signals")
@@ -115,6 +125,7 @@ def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, p
     lr = port.trades.lr
     metrics = calculate_metrics(lr, min_trades)
     return metrics
+
 
 def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> {}:
     """
@@ -148,11 +159,13 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
     # Corrermos simulaciones separando lags en chunks considerando que
     # usamos float64 => 8 bytes y cpu_count procesadores
     total_gbs = close.size * len(lr_thld) * len(vol_thld) * len(lag) * 8 / (1 << 30)
-    logging.info(f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs,2)}GB')
+    logging.info(
+        f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs, 2)}GB')
 
     parallelize = platform.system() == "Darwin"
     available_memory = psutil.virtual_memory().available
-    lags_partition_len = math.floor(available_memory / (2 * close.size * len(lr_thld) * len(vol_thld) * 8))  # el 2 es arbitrario
+    lags_partition_len = math.floor(
+        available_memory / (2 * close.size * len(lr_thld) * len(vol_thld) * 8))  # el 2 es arbitrario
     lag_chunks = divide_chunks(lag, lags_partition_len)
     logging.info(f'Chunks len={lags_partition_len}, #chunks={len(lag_chunks)}')
     # multi-procesamos
@@ -161,7 +174,8 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
         vol=volume, shifted_vol=shift_np(volume.to_numpy(), 1),
         lr_thld=lr_thld, vol_thld=vol_thld
     )
-    partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
+    partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close,
+                                     min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
     if False:
         with multiprocessing.Pool() as p:
             metrics = p.map(partial_simulate_chunk, lag_chunks)
@@ -173,6 +187,7 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
     logging.info('Simulation done')
     # levantamos las métricas de los archivos generados por los procesos
     return merge_intermediate_results(metrics)
+
 
 def plots_from_metrics(metrics: {}, save_dir):
     logging.info('Saving plots')
@@ -194,13 +209,13 @@ def plots_from_metrics(metrics: {}, save_dir):
         filepath = f"{save_dir}/{plot_counter}-{metric_name}_heatmap.html"
         metric["data"].vbt.heatmap(title=metric["title"], slider_level='signals_lag').write_html(filepath)
 
-
         plot_counter += 1
 
     # guardamos los resultados en un csv
     all_metrics_df = pd.concat(map(lambda m: m["data"], metrics.values()), axis=1)
     with open(f"{save_dir}/{plot_counter}-metrics.csv", 'w') as writer:
         writer.write(all_metrics_df.to_csv())
+
 
 def main():
     parser = argparse.ArgumentParser(description='Simulate Sell Off.')
@@ -249,6 +264,7 @@ def main():
 
     # graficamos y guardamos las métricas
     plots_from_metrics(metrics, save_dir=save_dir)
+
 
 if __name__ == '__main__':
     main()
