@@ -137,7 +137,7 @@ def wrapped_simulate_chunk(lag_partition, signals_static_args:dict, close, min_t
         simulate_chunk(lag_partition, signals_static_args, close, min_trades, portfolio_kwargs, partial_metrics_dir)
     except Exception as e:
         logging.info(e)
-        
+
 def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> {}:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
@@ -187,7 +187,8 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
     partial_metrics_dir = "./tmp"
     replace_dir(partial_metrics_dir)
     partial_simulate_chunk = partial(wrapped_simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs, partial_metrics_dir=partial_metrics_dir)
-    p_map(partial_simulate_chunk, lag_chunks, num_cpus=cpu_count)
+    with multiprocessing.Pool(cpu_count) as p:
+        p.map(partial_simulate_chunk, lag_chunks, chunksize=math.floor(cpu_count/len(lag_chunks)))
     logging.info('Simulation done')
     # levantamos las métricas de los archivos generados por los procesos
     metrics = []
