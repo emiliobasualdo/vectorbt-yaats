@@ -1,9 +1,12 @@
 import argparse
+import glob
 import json
 import logging
 import math
 import multiprocessing
 import os
+import pickle
+import shutil
 import sys
 from functools import partial
 import numpy as np
@@ -113,7 +116,7 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     }
     return results
 
-def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs):
+def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs, partial_metrics_dir):
     # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
     signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag_partition,
                                 param_product=True, short_name="signals")
@@ -121,13 +124,13 @@ def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, p
     # filtramos todas aquellas corridas que tengan menos de min_trades
     lr = port.trades.lr
     metrics = calculate_metrics(lr, min_trades)
-    return metrics
-
-def process_file_wrapped(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs):
-    try:
-        simulate_chunk(lag_partition, signals_static_args, close, min_trades, portfolio_kwargs)
-    except Exception as e:
-        print(e)
+    # https://docs.python.org/3.7/library/multiprocessing.html#programming-guidelines
+    # As far as possible one should try to avoid shifting large amounts of data between processes.
+    # por guardamos las métricas en archivos
+    filename = f"{partial_metrics_dir}/{lag_partition[0]}.tmp"
+    with open(filename, 'wb') as f:
+        pickle.dump(metrics, f)
+    return filename
 
 
 def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> {}:
@@ -176,9 +179,17 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
         vol=volume, shifted_vol=shift_np(volume.to_numpy(), 1),
         lr_thld=lr_thld, vol_thld=vol_thld
     )
-    partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
-    metrics = p_map(process_file_wrapped, lag_chunks, num_cpus=cpu_count)
+    partial_metrics_dir = "./tmp"
+    replace_dir(partial_metrics_dir)
+    partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs, partial_metrics_dir=partial_metrics_dir)
+    p_map(partial_simulate_chunk, lag_chunks, num_cpus=cpu_count)
     logging.info('Simulation done')
+    # levantamos las métricas de los archivos generados por los procesos
+    metrics = []
+    for file in glob.glob(f"{partial_metrics_dir}/*.tmp"):
+        with open(file, 'rb') as f:
+            metrics.append(pickle.load(f))
+    shutil.rmtree(partial_metrics_dir)
     return merge_intermediate_results(metrics)
 
 
