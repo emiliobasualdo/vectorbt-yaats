@@ -159,13 +159,15 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
 
     logging.info('Simulating portfolio')
 
-    # Corrermos simulaciones cada chunks de 8GB.
-    # Partimos el lag para que forme chunks de 8GB. Obs: usamos float64 => 8 bytes
-    cpu_count = multiprocessing.cpu_count()
-    available_memory = psutil.virtual_memory().available / (1<<30)
+    # Corrermos simulaciones separando lags en chunks considerando que
+    # usamos float64 => 8 bytes y cpu_count procesadores
     total_gbs = close.size * len(lr_thld) * len(vol_thld) * len(lag) * 8 / (1 << 30)
     logging.info(f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs,2)}GB')
-    lags_partition_len = math.floor(2 * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
+
+    cpu_count = multiprocessing.cpu_count()
+    available_memory = psutil.virtual_memory().available
+
+    lags_partition_len = math.floor(available_memory / (cpu_count * 2 * close.size * len(lr_thld) * len(vol_thld) * 8))
     lag_chunks = divide_chunks(lag, lags_partition_len)
     logging.info(f'Chunks len={lags_partition_len}, #chunks={len(lag_chunks)}')
     # multi-procesamos
@@ -175,7 +177,7 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
         lr_thld=lr_thld, vol_thld=vol_thld
     )
     partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
-    metrics = p_map(partial_simulate_chunk, lag_chunks, num_cpus=cpu_count)
+    metrics = p_map(process_file_wrapped, lag_chunks, num_cpus=cpu_count)
     logging.info('Simulation done')
     return merge_intermediate_results(metrics)
 
