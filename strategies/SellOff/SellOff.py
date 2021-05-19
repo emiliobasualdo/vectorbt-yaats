@@ -16,10 +16,9 @@ from numba import njit
 from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
 
-module_path = os.path.abspath(os.path.join('..'))
+module_path = os.path.abspath(os.path.join('../..'))
 if module_path not in sys.path:
     sys.path.append(module_path)
-
 from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, divide_chunks, \
     replace_dir
 
