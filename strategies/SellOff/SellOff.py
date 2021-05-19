@@ -1,32 +1,26 @@
 import argparse
-import gc
-import glob
-import shutil
-from datetime import timedelta
-import time
-from functools import partial
-from multiprocessing import Pool
-
-import pandas
-import vectorbt as vbt
+import json
+import logging
 import math
 import os
 import sys
+from functools import partial
+from multiprocessing import Pool
+
 import numpy as np
 import pandas as pd
-import json
-import logging
+import vectorbt as vbt
 from numba import njit
-from plotly.subplots import make_subplots
+from p_tqdm import p_map
+from tqdm import tqdm
 from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
-from tqdm import tqdm
 
 module_path = os.path.abspath(os.path.join('../..'))
 if module_path not in sys.path:
     sys.path.append(module_path)
 
-from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, dropnan, divide_chunks, \
+from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, divide_chunks, \
     replace_dir
 
 
@@ -120,7 +114,6 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     }
     return results
 
-pbar = tqdm()
 def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs):
     # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
     signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag_partition,
@@ -130,8 +123,6 @@ def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, p
     lr = port.trades.lr
     del signals, port
     metrics = calculate_metrics(lr, min_trades)
-    #logging.info(f"Chunk {lag_partition[0]} done")
-    pbar.update(1)
     return metrics
 
 def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size, min_trades) -> {}:
@@ -170,7 +161,6 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size,
     lags_partition_len = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
     lag_chunks = divide_chunks(lag, lags_partition_len)
     logging.info(f'Chunks len={lags_partition_len}, #chunks={len(lag_chunks)}')
-    pbar.total = len(lag_chunks)
     # multi-procesamos
     signals_static_args = dict(
         lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
@@ -178,9 +168,8 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size,
         lr_thld=lr_thld, vol_thld=vol_thld
     )
     partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
-    with Pool() as p:
-        metrics = p.map(partial_simulate_chunk, lag_chunks)
-    p.close()
+    metrics = p_map(partial_simulate_chunk, lag_chunks)
+    logging.info('Simulation done')
     del volume, lr_ind, close
     return merge_intermediate_results(metrics)
 
@@ -214,8 +203,7 @@ def plots_from_metrics(metrics: {}, save_dir):
     with open(f"{save_dir}/{plot_counter}-metrics.csv", 'w') as writer:
         writer.write(all_metrics_df.to_csv())
 
-
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(description='Simulate Sell Off.')
     parser.add_argument('ohlcv_csv', type=str, help="Open high low close volume data in .csv file")
     parser.add_argument('-m', '--min_trades', type=int, default=5,
@@ -264,3 +252,6 @@ if __name__ == '__main__':
 
     # graficamos y guardamos las métricas
     plots_from_metrics(metrics, save_dir=save_dir)
+
+if __name__ == '__main__':
+    main()
