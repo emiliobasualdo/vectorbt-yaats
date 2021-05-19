@@ -2,17 +2,16 @@ import argparse
 import json
 import logging
 import math
+import multiprocessing
 import os
 import sys
 from functools import partial
-from multiprocessing import Pool
-
 import numpy as np
 import pandas as pd
+import psutil
 import vectorbt as vbt
 from numba import njit
 from p_tqdm import p_map
-from tqdm import tqdm
 from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
 
@@ -121,11 +120,17 @@ def simulate_chunk(lag_partition, signals_static_args:dict, close, min_trades, p
     port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
     # filtramos todas aquellas corridas que tengan menos de min_trades
     lr = port.trades.lr
-    del signals, port
     metrics = calculate_metrics(lr, min_trades)
     return metrics
 
-def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size, min_trades) -> {}:
+def process_file_wrapped(lag_partition, signals_static_args:dict, close, min_trades, portfolio_kwargs):
+    try:
+        simulate_chunk(lag_partition, signals_static_args, close, min_trades, portfolio_kwargs)
+    except Exception as e:
+        print(e)
+
+
+def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> {}:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
     Acá no consideramos ni Stop Loss ni Take Profit.
@@ -156,9 +161,11 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size,
 
     # Corrermos simulaciones cada chunks de 8GB.
     # Partimos el lag para que forme chunks de 8GB. Obs: usamos float64 => 8 bytes
+    cpu_count = multiprocessing.cpu_count()
+    available_memory = psutil.virtual_memory().available / (1<<30)
     total_gbs = close.size * len(lr_thld) * len(vol_thld) * len(lag) * 8 / (1 << 30)
     logging.info(f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs,2)}GB')
-    lags_partition_len = math.floor(max_chunk_size * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
+    lags_partition_len = math.floor(2 * float(1 << 30) / (close.size * len(lr_thld) * len(vol_thld) * 8))
     lag_chunks = divide_chunks(lag, lags_partition_len)
     logging.info(f'Chunks len={lags_partition_len}, #chunks={len(lag_chunks)}')
     # multi-procesamos
@@ -168,9 +175,8 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size,
         lr_thld=lr_thld, vol_thld=vol_thld
     )
     partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close, min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
-    metrics = p_map(partial_simulate_chunk, lag_chunks)
+    metrics = p_map(partial_simulate_chunk, lag_chunks, num_cpus=cpu_count)
     logging.info('Simulation done')
-    del volume, lr_ind, close
     return merge_intermediate_results(metrics)
 
 
@@ -208,11 +214,9 @@ def main():
     parser.add_argument('ohlcv_csv', type=str, help="Open high low close volume data in .csv file")
     parser.add_argument('-m', '--min_trades', type=int, default=5,
                         help="Min amount of trades per simulation to consider the simulation as as meaningful")
-    parser.add_argument('-c', '--max_chunk_size', type=int, default=8, help="Max chunk size to simulate in Gigabytes")
     args = parser.parse_args()
     filepath = args.ohlcv_csv
     min_trades = args.min_trades
-    max_chunk_size = args.max_chunk_size
 
     # add custom formatter to root logger for simple demonstration
     handler = logging.StreamHandler()
@@ -233,7 +237,7 @@ def main():
         max_logs=0,
     )
 
-    metrics = simulate_lrs(filepath, portfolio_kwargs, lr_thld, vol_thld, lag, max_chunk_size, min_trades)
+    metrics = simulate_lrs(filepath, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades)
 
     # guardamos los parámetros para estar al tanto de sus valores al momento de estudiarlos
     _, filename = os.path.split(filepath)
