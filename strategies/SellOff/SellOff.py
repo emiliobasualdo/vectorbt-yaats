@@ -51,8 +51,8 @@ def signals_nb(lr, shifted_lr, vol, shifted_vol, lr_thld, vol_thld, lag):
     # luego calculamos las 3 señales distintas: LRS+[i], LRS-[i] y VS[i]
     lr_entries, vol_entries = signal_calculations(lr, lr_ma, lr_mstd, vol, vol_ma, lr_thld, vol_thld)
     # por último: entry = LRS-[i] & VS[i]
-    final_entries = lr_entries & vol_entries
-    exits = shift_np(rank_nb(lr_entries) == 1, k)
+    final_entries = rank_nb(lr_entries & vol_entries) == 1
+    exits = shift_np(rank_nb(final_entries) == 1, k)
     return final_entries, exits
 
 
@@ -113,9 +113,9 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
     return results
 
 
-def simulate_chunk(lag_partition, signals_static_args: dict, close, min_trades, portfolio_kwargs):
+def simulate_chunk(lag, signals_static_args: dict, close, min_trades, portfolio_kwargs):
     # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
-    signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag_partition,
+    signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag,
                                 param_product=True, short_name="signals")
     port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
     # filtramos todas aquellas corridas que tengan menos de min_trades
@@ -126,7 +126,7 @@ def simulate_chunk(lag_partition, signals_static_args: dict, close, min_trades, 
     return metrics
 
 
-def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> {}:
+def simulate_lrs(file, lr_thld, vol_thld, lag, min_trades, parallelize=True) -> {}:
     """
     Simulamos un portfolio para optimizar: lr_thld, vol_thld y lag.
     Acá no consideramos ni Stop Loss ni Take Profit.
@@ -155,11 +155,13 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
 
     logging.info('Simulating portfolio')
 
-    # Corrermos simulaciones separando lags en chunks considerando que
-    # usamos float64 => 8 bytes y cpu_count procesadores
-    total_gbs = close.size * len(lr_thld) * len(vol_thld) * len(lag) * 8 / (1 << 30)
-    logging.info(
-        f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs, 2)}GB')
+    portfolio_kwargs = dict(
+        direction='longonly',  # Solo long, no se shortea
+        freq='m',
+        size=np.inf,  # Se compra y vende toda la caja en cada operación.
+        fees=0.001,
+        max_logs=0,
+    )
 
     # multi-procesamos
     signals_static_args = dict(
@@ -170,13 +172,14 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
 
     partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close,
                                      min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
-    cpu_count = multiprocessing.cpu_count()
-    cpus = len(lag) if len(lag) < cpu_count else cpu_count
-    metrics = p_map(partial_simulate_chunk, lag, num_cpus=cpus)
+    if parallelize:
+        cpu_count = multiprocessing.cpu_count()
+        cpus = len(lag) if len(lag) < cpu_count else cpu_count
+        metrics = p_map(partial_simulate_chunk, lag, num_cpus=cpus)
+        return merge_intermediate_results(metrics)
+    else:
 
-    logging.info('Simulation done')
-    # levantamos las métricas de los archivos generados por los procesos
-    return merge_intermediate_results(metrics)
+        return partial_simulate_chunk(lag)
 
 
 def plots_from_metrics(metrics: {}, save_dir):
@@ -231,15 +234,7 @@ def main():
     vol_thld = np.linspace(0, 4, 30, endpoint=True)
     lag = list(range(6, 100, 2))
 
-    portfolio_kwargs = dict(
-        direction='longonly',  # Solo long, no se shortea
-        freq='m',
-        size=np.inf,  # Se compra y vende toda la caja en cada operación.
-        fees=0.001,
-        max_logs=0,
-    )
-
-    metrics = simulate_lrs(filepath, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades)
+    metrics = simulate_lrs(filepath, lr_thld, vol_thld, lag, min_trades)
 
     # guardamos los parámetros para estar al tanto de sus valores al momento de estudiarlos
     _, filename = os.path.split(filepath)
@@ -247,7 +242,6 @@ def main():
     replace_dir(save_dir)
     parameters_to_save = {
         **vars(args),
-        **portfolio_kwargs,
         "lr_thld": f"range({lr_thld[0]},{lr_thld[-1]}, steps={len(lr_thld)})",
         "vol_thld": f"range({vol_thld[0]},{vol_thld[-1]}, steps={len(vol_thld)})",
         "lag": f"range({lag[0]},{lag[-1]}, steps={len(lag)})",
