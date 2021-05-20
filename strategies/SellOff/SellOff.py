@@ -2,37 +2,32 @@ import argparse
 import gc
 import json
 import logging
-import math
 import multiprocessing
 import os
-import platform
 import sys
 from functools import partial
+
 import numpy as np
 import pandas as pd
-import psutil
 import vectorbt as vbt
 from numba import njit
-from tqdm import tqdm
 from p_tqdm import p_map
 from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
+from vectorbt.signals.nb import rank_nb
 
 module_path = os.path.abspath(os.path.join('../..'))
 if module_path not in sys.path:
     sys.path.append(module_path)
-from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, divide_chunks, \
-    replace_dir
+from lib.utils import ohlcv_csv_to_df, LR, ExtendedPortfolio, shift_np, ElapsedFormatter, replace_dir
 
 
 @njit
 def signal_calculations(lr, lr_ma, lr_mstd, vol, vol_ma, lr_thld, vol_thld):
-    lr_thld_std = lr_thld * lr_mstd
     # lr_thld < 0
-    lr_entries = np.where(lr < lr_ma + lr_thld_std, True, False)
-    lr_exits = np.where(lr > lr_ma - lr_thld_std, True, False)
+    lr_entries = np.where(lr < lr_ma + lr_thld * lr_mstd, True, False)
     vol_entries = np.where(vol > vol_thld * vol_ma, True, False)
-    return lr_entries, lr_exits, vol_entries
+    return lr_entries, vol_entries
 
 
 @njit
@@ -54,10 +49,11 @@ def signals_nb(lr, shifted_lr, vol, shifted_vol, lr_thld, vol_thld, lag):
     """
     lr_ma, lr_mstd, vol_ma = ma_mstd(shifted_lr, shifted_vol, lag)
     # luego calculamos las 3 señales distintas: LRS+[i], LRS-[i] y VS[i]
-    lr_entries, lr_exits, vol_entries = signal_calculations(lr, lr_ma, lr_mstd, vol, vol_ma, lr_thld, vol_thld)
+    lr_entries, vol_entries = signal_calculations(lr, lr_ma, lr_mstd, vol, vol_ma, lr_thld, vol_thld)
     # por último: entry = LRS-[i] & VS[i]
     final_entries = lr_entries & vol_entries
-    return final_entries, lr_exits
+    exits = shift_np(rank_nb(lr_entries) == 1, k)
+    return final_entries, exits
 
 
 ENTRY_SIGNALS = vbt.IndicatorFactory(
@@ -210,7 +206,7 @@ def plots_from_metrics(metrics: {}, save_dir):
     with open(f"{save_dir}/{plot_counter}-metrics.csv", 'w') as writer:
         writer.write(all_metrics_df.to_csv())
 
-
+k = 2
 def main():
     try:
         multiprocessing.set_start_method('spawn')
@@ -255,6 +251,7 @@ def main():
         "lr_thld": f"range({lr_thld[0]},{lr_thld[-1]}, steps={len(lr_thld)})",
         "vol_thld": f"range({vol_thld[0]},{vol_thld[-1]}, steps={len(vol_thld)})",
         "lag": f"range({lag[0]},{lag[-1]}, steps={len(lag)})",
+        "k" : k
     }
     # create or replace dir if exists
     with open(f"{save_dir}/parameters.txt", 'w') as file:
