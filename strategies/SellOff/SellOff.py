@@ -1,4 +1,5 @@
 import argparse
+import gc
 import json
 import logging
 import math
@@ -7,12 +8,13 @@ import os
 import platform
 import sys
 from functools import partial
-
 import numpy as np
 import pandas as pd
 import psutil
 import vectorbt as vbt
 from numba import njit
+from tqdm import tqdm
+from p_tqdm import p_map
 from vectorbt import MappedArray
 from vectorbt.generic import nb as generic_nb
 
@@ -175,13 +177,10 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
     )
     partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close,
                                      min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
-    if False:
-        with multiprocessing.Pool() as p:
-            metrics = p.map(partial_simulate_chunk, lag_chunks)
+    if parallelize:
+        metrics = p_map(partial_simulate_chunk, lag_chunks)
     else:
-        metrics = []
-        for chunk in lag_chunks:
-            metrics.append(partial_simulate_chunk(chunk))
+        metrics = p_map(partial_simulate_chunk, lag)
 
     logging.info('Simulation done')
     # levantamos las métricas de los archivos generados por los procesos
@@ -217,6 +216,10 @@ def plots_from_metrics(metrics: {}, save_dir):
 
 
 def main():
+    try:
+        multiprocessing.set_start_method('spawn')
+    except RuntimeError:
+        pass
     parser = argparse.ArgumentParser(description='Simulate Sell Off.')
     parser.add_argument('ohlcv_csv', type=str, help="Open high low close volume data in .csv file")
     parser.add_argument('-m', '--min_trades', type=int, default=5,
@@ -263,6 +266,7 @@ def main():
 
     # graficamos y guardamos las métricas
     plots_from_metrics(metrics, save_dir=save_dir)
+    logging.info('Done')
 
 
 if __name__ == '__main__':
