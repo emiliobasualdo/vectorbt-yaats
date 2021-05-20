@@ -125,6 +125,8 @@ def simulate_chunk(lag_partition, signals_static_args: dict, close, min_trades, 
     # filtramos todas aquellas corridas que tengan menos de min_trades
     lr = port.trades.lr
     metrics = calculate_metrics(lr, min_trades)
+    del port, lr
+    gc.collect()
     return metrics
 
 
@@ -163,24 +165,18 @@ def simulate_lrs(file, portfolio_kwargs, lr_thld, vol_thld, lag, min_trades) -> 
     logging.info(
         f'Matrix shape={(close.size, (len(lr_thld), len(vol_thld), len(lag)))}, weight={round(total_gbs, 2)}GB')
 
-    parallelize = platform.system() == "Darwin"
-    available_memory = psutil.virtual_memory().available
-    lags_partition_len = math.floor(
-        available_memory / (2 * close.size * len(lr_thld) * len(vol_thld) * 8))  # el 2 es arbitrario
-    lag_chunks = divide_chunks(lag, lags_partition_len)
-    logging.info(f'Chunks len={lags_partition_len}, #chunks={len(lag_chunks)}')
     # multi-procesamos
     signals_static_args = dict(
         lr=lr_ind.lr, shifted_lr=shift_np(lr_ind.lr.to_numpy(), 1),
         vol=volume, shifted_vol=shift_np(volume.to_numpy(), 1),
         lr_thld=lr_thld, vol_thld=vol_thld
     )
+
     partial_simulate_chunk = partial(simulate_chunk, signals_static_args=signals_static_args, close=close,
                                      min_trades=min_trades, portfolio_kwargs=portfolio_kwargs)
-    if parallelize:
-        metrics = p_map(partial_simulate_chunk, lag_chunks)
-    else:
-        metrics = p_map(partial_simulate_chunk, lag)
+    cpu_count = multiprocessing.cpu_count()
+    cpus = len(lag) if len(lag) < cpu_count else cpu_count
+    metrics = p_map(partial_simulate_chunk, lag, num_cpus=cpus)
 
     logging.info('Simulation done')
     # levantamos las métricas de los archivos generados por los procesos
