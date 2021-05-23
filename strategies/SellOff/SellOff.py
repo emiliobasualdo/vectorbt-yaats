@@ -39,7 +39,7 @@ def ma_mstd(shifted_lr, shifted_volume, lag):
 
 
 @njit
-def signals_nb(lr, shifted_lr, vol, shifted_vol, lr_thld, vol_thld, lag):
+def signals_nb(lr, shifted_lr, vol, shifted_vol, lr_thld, vol_thld, lag, exit_wait):
     """
     Primero calculamos los moving average del volume y los ma y std de lr.
     Se calculan sobre vol y lr shifteados(shifted_lr y shifted_vol) una posición hacia adelante para que, e.i.,
@@ -52,13 +52,13 @@ def signals_nb(lr, shifted_lr, vol, shifted_vol, lr_thld, vol_thld, lag):
     lr_entries, vol_entries = signal_calculations(lr, lr_ma, lr_mstd, vol, vol_ma, lr_thld, vol_thld)
     # por último: entry = LRS-[i] & VS[i]
     final_entries = rank_nb(lr_entries & vol_entries) == 1
-    exits = shift_np(rank_nb(final_entries) == 1, k)
+    exits = shift_np(final_entries, exit_wait)
     return final_entries, exits
 
 
 ENTRY_SIGNALS = vbt.IndicatorFactory(
     input_names=['lr', 'shifted_lr', 'vol', 'shifted_vol'],
-    param_names=['lr_thld', 'vol_thld', 'lag'],
+    param_names=['lr_thld', 'vol_thld', 'lag', 'exit_wait'],
     output_names=['entries', 'exits']
 ).from_apply_func(signals_nb, use_ray=True)
 
@@ -115,7 +115,7 @@ def calculate_metrics(trades_lr: MappedArray, min_trades, min_lr=0) -> {}:
 
 def simulate_chunk(lag, signals_static_args: dict, close, min_trades, portfolio_kwargs):
     # Calculamos la señal de entrada y salida para cada combinación de lr_thld, vol_thld y lag.
-    signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag,
+    signals = ENTRY_SIGNALS.run(**signals_static_args, lag=lag, exit_wait=2,
                                 param_product=True, short_name="signals")
     port = ExtendedPortfolio.from_signals(close, signals.entries, signals.exits, **portfolio_kwargs)
     # filtramos todas aquellas corridas que tengan menos de min_trades
@@ -209,7 +209,7 @@ def plots_from_metrics(metrics: {}, save_dir):
     with open(f"{save_dir}/{plot_counter}-metrics.csv", 'w') as writer:
         writer.write(all_metrics_df.to_csv())
 
-k = 2
+
 def main():
     try:
         multiprocessing.set_start_method('spawn')

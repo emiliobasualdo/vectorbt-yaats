@@ -154,7 +154,7 @@ def resample_ohlcv(df, new_frequency, columns=None):
 def where_true_set_series(series, data):
     data = data.copy()
     data.where(data == True, np.nan, inplace=True)
-    data.where(data != 1, series, inplace=True)
+    data.where(data != 1, series, inplace=True, axis=0)
     return data
 
 def plot_series_vs_scatters(series_list: list, booleans_list):
